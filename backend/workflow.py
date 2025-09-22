@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, State, field, START, END
-from app import agents
+from backend import agents
 
 # Define the state structure for the analysis
 class IdeaAnalysisState(State):
