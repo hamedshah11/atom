@@ -2,7 +2,17 @@ import os, sys
 from pathlib import Path
 import streamlit as st
 
-# Make repo root importable (so we can import backend/* and utils/*)
+st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
+
+# --- Load secrets into env *before* importing backend (so client sees the key) ---
+if "openai_api_key" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
+# Optional model overrides via secrets
+for k in ("PLANNER_MODEL", "ANALYST_MODEL", "CRITIC_MODEL", "SYNTH_MODEL"):
+    if k.lower() in st.secrets:
+        os.environ[k] = st.secrets[k.lower()]
+
+# --- Make repo root importable ---
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -11,19 +21,14 @@ from backend import agents
 from utils.visuals import make_market_chart, draw_agent_graph
 from utils.pdf import generate_analysis_pdf
 
-st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
 st.title("Business Idea Analyzer")
-
 st.write(
     "Enter a business idea. This app runs multiple specialist AI agents "
     "(Planner → Market → Competition → Financials → GTM → Risks → Critic → Synthesizer) "
     "and returns a Lean Canvas, Market Analysis (with TAM/SAM/SOM), and Feasibility."
 )
 
-# Secrets → env for OpenAI SDK
-if "openai_api_key" in st.secrets:
-    os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
-
+# Fallback key entry (local dev)
 if not os.getenv("OPENAI_API_KEY"):
     with st.expander("🔑 Configure OpenAI API key"):
         key = st.text_input("OpenAI API Key", type="password")
