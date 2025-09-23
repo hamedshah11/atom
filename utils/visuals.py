@@ -2,7 +2,6 @@ import re
 import matplotlib.pyplot as plt
 
 def _parse_val(s: str):
-    # Extract number and unit; supports plain numbers, M/B suffixes, or words
     s = s.strip()
     m = re.match(r"([\d\.,]+)\s*([kKmMbB])?", s)
     if not m:
@@ -13,36 +12,23 @@ def _parse_val(s: str):
         num *= 1000.0
     elif unit == "k":
         num /= 1000.0
-    # normalized to Millions
-    return num
+    return num  # in Millions
 
 def extract_tam_sam_som(text: str):
-    """
-    Looks for a line like: TAM: X, SAM: Y, SOM: Z (units may be implied)
-    Returns (tam_m, sam_m, som_m) in 'Millions' if found else (None, None, None).
-    """
-    # Try to find the last line mentioning all three
     lines = [ln.strip() for ln in text.splitlines() if "TAM" in ln and "SAM" in ln and "SOM" in ln]
     if not lines:
         return (None, None, None)
     line = lines[-1]
-    # Very permissive parsing
     m = re.search(r"TAM\s*:\s*([^,]+)", line); tam = _parse_val(m.group(1)) if m else None
     m = re.search(r"SAM\s*:\s*([^,]+)", line); sam = _parse_val(m.group(1)) if m else None
     m = re.search(r"SOM\s*:\s*([^,\)]+)", line); som = _parse_val(m.group(1)) if m else None
     return (tam, sam, som)
 
 def make_market_chart(market_text: str, filename: str = "tam_sam_som_chart.png"):
-    """
-    Build a bar chart for TAM/SAM/SOM (in Millions). Returns filename or None.
-    """
     tam, sam, som = extract_tam_sam_som(market_text)
     if tam is None or sam is None or som is None:
         return None
-
-    vals = [tam, sam, som]
-    labels = ["TAM", "SAM", "SOM"]
-
+    vals = [tam, sam, som]; labels = ["TAM", "SAM", "SOM"]
     fig, ax = plt.subplots(figsize=(6,4))
     ax.bar(labels, vals)
     ax.set_title("Market Size (Millions)")
@@ -55,9 +41,6 @@ def make_market_chart(market_text: str, filename: str = "tam_sam_som_chart.png")
     return filename
 
 def draw_agent_graph(filename: str = "agent_workflow.png"):
-    """
-    Simple static diagram via matplotlib (boxes + arrows).
-    """
     fig, ax = plt.subplots(figsize=(7,6))
     ax.axis("off")
     boxes = [
@@ -70,25 +53,18 @@ def draw_agent_graph(filename: str = "agent_workflow.png"):
         ("Critic", 0.51, 0.43),
         ("Synthesizer", 0.51, 0.20),
     ]
-    # draw nodes
     for label, x, y in boxes:
         ax.text(x, y, label, ha="center", va="center",
                 bbox=dict(boxstyle="round,pad=0.3", fc="#E8F1FF", ec="#1B3B6F"))
-
-    # arrows
     def arr(x1, y1, x2, y2):
         ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
                     arrowprops=dict(arrowstyle="->", color="gray", lw=1.5))
-    # Planner to all analysts
     arr(0.10, 0.83, 0.05, 0.67); arr(0.10, 0.83, 0.28, 0.67)
     arr(0.10, 0.83, 0.51, 0.67); arr(0.10, 0.83, 0.74, 0.67)
     arr(0.10, 0.83, 0.87, 0.67)
-    # Analysts to critic
     for x in [0.05, 0.28, 0.51, 0.74, 0.87]:
         arr(x, 0.63, 0.51, 0.45)
-    # Critic to Synth
     arr(0.51, 0.41, 0.51, 0.22)
-
     fig.tight_layout()
     fig.savefig(filename)
     plt.close(fig)
