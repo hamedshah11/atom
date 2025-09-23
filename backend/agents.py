@@ -12,18 +12,21 @@ O4MINI_MODEL = "gpt-3.5-turbo"  # Placeholder for o4-mini model (using GPT-3.5 a
 
 def call_openai_chat(model: str, system_prompt: str, user_prompt: str) -> str:
     """
-    Helper to call OpenAI ChatCompletion and return the assistant message text.
+    Helper to call OpenAI ChatCompletion (using updated OpenAI API) and return the assistant message text.
     """
     try:
-        response = openai.ChatCompletion.create(
+        # Use the new OpenAI chat completion call (v1.0.0+)
+        response = openai.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user",   "content": user_prompt}
             ]
+            # You can include other params like temperature, max_tokens, etc., as needed
         )
-        answer = response["choices"][0]["message"]["content"]
-        return answer.strip()
+        # Extract the assistant's reply using attribute access (since response is an object in v1+)
+        answer_text = response.choices[0].message.content
+        return answer_text.strip()
     except Exception as e:
         # If there's an API error or missing key, return an error message
         return f"Error: {e}"
