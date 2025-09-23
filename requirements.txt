@@ -1,0 +1,5 @@
+streamlit
+langgraph
+openai
+fpdf
+matplotlib
