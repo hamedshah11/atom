@@ -4,15 +4,14 @@ import streamlit as st
 
 st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
 
-# --- Load secrets into env *before* importing backend (so client sees the key) ---
+# --- Streamlit secrets → environment BEFORE importing backend ---
 if "openai_api_key" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
-# Optional model overrides via secrets
-for k in ("PLANNER_MODEL", "ANALYST_MODEL", "CRITIC_MODEL", "SYNTH_MODEL"):
-    if k.lower() in st.secrets:
-        os.environ[k] = st.secrets[k.lower()]
+# Optional: allow overriding model via secrets (lowercase keys in secrets.toml)
+if "model_all" in st.secrets:
+    os.environ["MODEL_ALL"] = st.secrets["model_all"]
 
-# --- Make repo root importable ---
+# Make repo root importable
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -28,7 +27,7 @@ st.write(
     "and returns a Lean Canvas, Market Analysis (with TAM/SAM/SOM), and Feasibility."
 )
 
-# Fallback key entry (local dev)
+# Fallback: local dev key entry
 if not os.getenv("OPENAI_API_KEY"):
     with st.expander("🔑 Configure OpenAI API key"):
         key = st.text_input("OpenAI API Key", type="password")
