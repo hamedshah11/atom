@@ -1,10 +1,8 @@
-# ui/app.py
-import streamlit as st
-import openai
-import sys
+import os, sys
 from pathlib import Path
+import streamlit as st
 
-# Ensure project root is on sys.path (so "backend" and "utils" resolve)
+# Make repo root importable (so we can import backend/* and utils/*)
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -13,80 +11,94 @@ from backend import agents
 from utils.visuals import make_market_chart, draw_agent_graph
 from utils.pdf import generate_analysis_pdf
 
-# Title and description
+st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
 st.title("Business Idea Analyzer")
-st.write("Enter a business idea to analyze its market, competition, financial feasibility, go-to-market strategy, and risks. This app uses multiple AI agents (Planner, Analysts, Critic, Synthesizer) to evaluate your idea.")
 
-# API Key input if not set in environment (for local usage)
-if not openai.api_key:
-    api_key = st.text_input("OpenAI API Key (required)", type="password")
-    if api_key:
-        openai.api_key = api_key
+st.write(
+    "Enter a business idea. This app runs multiple specialist AI agents "
+    "(Planner → Market → Competition → Financials → GTM → Risks → Critic → Synthesizer) "
+    "and returns a Lean Canvas, Market Analysis (with TAM/SAM/SOM), and Feasibility."
+)
 
-# User input for the business idea
-idea_input = st.text_area("Business Idea", placeholder="Describe your business idea here...", height=150)
+# Secrets → env for OpenAI SDK
+if "openai_api_key" in st.secrets:
+    os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
 
-if st.button("Analyze Idea"):
-    if not idea_input.strip():
-        st.error("Please enter a business idea to analyze.")
-    else:
-        # 1. Planner: create analysis plan
-        st.subheader("1. Planner Output")
-        plan_text = agents.planner_agent(idea_input.strip())
-        st.write(plan_text)
-        # 2. Market Analysis
-        st.subheader("2. Market Analysis")
-        market_text = agents.market_analysis_agent(idea_input)
-        st.write(market_text)
-        # 3. Competition Analysis
-        st.subheader("3. Competition Analysis")
-        competition_text = agents.competition_analysis_agent(idea_input)
-        st.write(competition_text)
-        # 4. Financial Feasibility
-        st.subheader("4. Financial Feasibility")
-        financial_text = agents.financial_feasibility_agent(idea_input)
-        st.write(financial_text)
-        # 5. Go-to-Market Strategy
-        st.subheader("5. Go-to-Market Strategy")
-        gtm_text = agents.gtm_strategy_agent(idea_input)
-        st.write(gtm_text)
-        # 6. Risks Analysis
-        st.subheader("6. Risks Analysis")
-        risks_text = agents.risks_analysis_agent(idea_input)
-        st.write(risks_text)
-        # 7. Critic Feedback
-        st.subheader("7. Critique (Critic Agent)")
-        analyses_dict = {
-            "Market": market_text,
-            "Competition": competition_text,
-            "Financial": financial_text,
-            "GTM": gtm_text,
-            "Risks": risks_text
+if not os.getenv("OPENAI_API_KEY"):
+    with st.expander("🔑 Configure OpenAI API key"):
+        key = st.text_input("OpenAI API Key", type="password")
+        if key:
+            os.environ["OPENAI_API_KEY"] = key
+            st.success("API key set for this session.")
+
+idea = st.text_area("Your business idea", height=140, placeholder="Describe your idea...")
+
+run = st.button("Analyze Idea", type="primary")
+
+if run:
+    if not idea.strip():
+        st.error("Please enter a business idea.")
+        st.stop()
+
+    col1, col2 = st.columns([2,1])
+    with col1:
+        st.subheader("1) Planner")
+        plan = agents.planner_agent(idea)
+        st.write(plan)
+
+        st.subheader("2) Market Analysis")
+        market = agents.market_analysis_agent(idea)
+        st.write(market)
+
+        st.subheader("3) Competition")
+        competition = agents.competition_analysis_agent(idea)
+        st.write(competition)
+
+        st.subheader("4) Financial Feasibility")
+        financial = agents.financial_feasibility_agent(idea)
+        st.write(financial)
+
+        st.subheader("5) Go-to-Market (GTM)")
+        gtm = agents.gtm_strategy_agent(idea)
+        st.write(gtm)
+
+        st.subheader("6) Risks")
+        risks = agents.risks_analysis_agent(idea)
+        st.write(risks)
+
+        st.subheader("7) Critique")
+        analyses = {
+            "Market": market,
+            "Competition": competition,
+            "Financial": financial,
+            "GTM": gtm,
+            "Risks": risks,
         }
-        critic_text = agents.critic_agent(idea_input, analyses_dict)
-        st.write(critic_text)
-        # 8. Final Synthesized Report
-        st.subheader("8. Final Synthesized Report")
-        final_report_text = agents.synthesizer_agent(idea_input, analyses_dict, critic_text)
-        # Display final report with markdown (it may contain structured content)
-        st.markdown(final_report_text)
-        # Visualizations
-        chart_path = make_market_chart(market_text, filename="tam_sam_som_chart.png")
-        graph_path = draw_agent_graph(filename="agent_workflow.png")
+        critic = agents.critic_agent(idea, analyses)
+        st.write(critic)
+
+        st.subheader("8) Final Report")
+        final_md = agents.synthesizer_agent(idea, analyses, critic)
+        st.markdown(final_md)
+
+    with col2:
+        st.subheader("Visuals")
+        chart_path = make_market_chart(market, filename="tam_sam_som_chart.png")
         if chart_path:
-            st.image(chart_path, caption="TAM/SAM/SOM Market Size Chart")
+            st.image(chart_path, caption="TAM / SAM / SOM")
+
+        graph_path = draw_agent_graph(filename="agent_workflow.png")
         if graph_path:
-            st.image(graph_path, caption="Agent Workflow DAG")
-        # PDF Download
-        pdf_data = generate_analysis_pdf(
-            idea=idea_input.strip(), plan=plan_text,
-            market=market_text, competition=competition_text,
-            financial=financial_text, gtm=gtm_text,
-            risks=risks_text, critic=critic_text,
-            final_report=final_report_text,
-            chart_path=chart_path, graph_path=graph_path
+            st.image(graph_path, caption="Agent Workflow")
+
+        st.divider()
+        pdf_bytes = generate_analysis_pdf(
+            idea=idea, plan=plan, market=market, competition=competition,
+            financial=financial, gtm=gtm, risks=risks, critic=critic,
+            final_report=final_md, chart_path=chart_path, graph_path=graph_path
         )
-        if pdf_data:
-            st.download_button(label="Download Full Analysis as PDF", data=pdf_data, file_name="Business_Idea_Analysis.pdf", mime="application/pdf")
+        if pdf_bytes:
+            st.download_button("Download Full Analysis (PDF)", data=pdf_bytes,
+                               file_name="business_idea_analysis.pdf", mime="application/pdf")
         else:
-            st.error("Failed to generate PDF.")
+            st.caption("PDF generation unavailable.")
