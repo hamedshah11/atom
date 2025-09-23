@@ -1,128 +1,95 @@
 import re
-import math
 import matplotlib.pyplot as plt
 
-def make_market_chart(market_analysis_text: str, filename: str = "market_chart.png"):
+def _parse_val(s: str):
+    # Extract number and unit; supports plain numbers, M/B suffixes, or words
+    s = s.strip()
+    m = re.match(r"([\d\.,]+)\s*([kKmMbB])?", s)
+    if not m:
+        return None
+    num = float(m.group(1).replace(",", ""))
+    unit = (m.group(2) or "").lower()
+    if unit == "b":
+        num *= 1000.0
+    elif unit == "k":
+        num /= 1000.0
+    # normalized to Millions
+    return num
+
+def extract_tam_sam_som(text: str):
     """
-    Generate a bar chart for TAM/SAM/SOM from the market analysis text.
-    Extracts numeric values for TAM, SAM, SOM (assuming values given in analysis).
-    Saves chart as PNG to the given filename.
-    Returns the filename if successful, else None.
+    Looks for a line like: TAM: X, SAM: Y, SOM: Z (units may be implied)
+    Returns (tam_m, sam_m, som_m) in 'Millions' if found else (None, None, None).
     """
-    # Default values in case parsing fails
-    tam_val = sam_val = som_val = None
-    # Try to find numeric values for TAM, SAM, SOM using regex
-    patterns = {
-        'TAM': r'TAM\s*[:\-]\s*\$?([\d\.,]+)\s*([Bb]illion|[Mm]illion|B|M)?',
-        'SAM': r'SAM\s*[:\-]\s*\$?([\d\.,]+)\s*([Bb]illion|[Mm]illion|B|M)?',
-        'SOM': r'SOM\s*[:\-]\s*\$?([\d\.,]+)\s*([Bb]illion|[Mm]illion|B|M)?'
-    }
-    values = {}
-    for key, pattern in patterns.items():
-        match = re.search(pattern, market_analysis_text)
-        if match:
-            num_str = match.group(1)
-            unit = match.group(2)
-            # Remove commas and convert to float
-            try:
-                num = float(num_str.replace(',', ''))
-            except:
-                num = None
-            # Convert unit to millions
-            if num is not None:
-                if unit:
-                    unit = unit.lower()
-                    if unit.startswith('b'):  # billion
-                        num = num * 1000  # convert to millions
-                    # if million or M, it's already in millions
-                    # if no unit or recognized, assume already in base unit (millions)
-                values[key] = num
-    if len(values) == 3:
-        tam_val = values['TAM']
-        sam_val = values['SAM']
-        som_val = values['SOM']
-    else:
-        # If not all found, return None (chart won't be generated)
+    # Try to find the last line mentioning all three
+    lines = [ln.strip() for ln in text.splitlines() if "TAM" in ln and "SAM" in ln and "SOM" in ln]
+    if not lines:
+        return (None, None, None)
+    line = lines[-1]
+    # Very permissive parsing
+    m = re.search(r"TAM\s*:\s*([^,]+)", line); tam = _parse_val(m.group(1)) if m else None
+    m = re.search(r"SAM\s*:\s*([^,]+)", line); sam = _parse_val(m.group(1)) if m else None
+    m = re.search(r"SOM\s*:\s*([^,\)]+)", line); som = _parse_val(m.group(1)) if m else None
+    return (tam, sam, som)
+
+def make_market_chart(market_text: str, filename: str = "tam_sam_som_chart.png"):
+    """
+    Build a bar chart for TAM/SAM/SOM (in Millions). Returns filename or None.
+    """
+    tam, sam, som = extract_tam_sam_som(market_text)
+    if tam is None or sam is None or som is None:
         return None
 
-    # Determine scale for labeling
-    unit_label = "Millions"
-    # If TAM is huge, switch to billions for readability
-    if tam_val and tam_val >= 1000:
-        unit_label = "Billions"
-        tam_plot = tam_val / 1000.0
-        sam_plot = sam_val / 1000.0
-        som_plot = som_val / 1000.0
-    else:
-        tam_plot = tam_val
-        sam_plot = sam_val
-        som_plot = som_val
+    vals = [tam, sam, som]
+    labels = ["TAM", "SAM", "SOM"]
 
-    # Create bar chart
-    categories = ['TAM', 'SAM', 'SOM']
-    values_plot = [tam_plot, sam_plot, som_plot]
     fig, ax = plt.subplots(figsize=(6,4))
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']  # blue, orange, green
-    ax.bar(categories, values_plot, color=colors)
-    ax.set_title("Market Size Estimates")
-    ax.set_ylabel(f"Market Size ({unit_label})")
-    # Annotate values on top of bars
-    for i, val in enumerate(values_plot):
-        ax.text(i, val + (0.05 * max(values_plot)), f"{val:.2f}", ha='center', fontweight='bold')
+    ax.bar(labels, vals)
+    ax.set_title("Market Size (Millions)")
+    ax.set_ylabel("Millions")
+    for i, v in enumerate(vals):
+        ax.text(i, v * 1.02, f"{v:.2f}", ha="center", fontsize=9)
     fig.tight_layout()
-    # Save to file
-    try:
-        fig.savefig(filename)
-        plt.close(fig)
-        return filename
-    except Exception as e:
-        print(f"Error saving chart: {e}")
-        return None
+    fig.savefig(filename)
+    plt.close(fig)
+    return filename
 
-def draw_agent_graph(filename: str = "agent_graph.png"):
+def draw_agent_graph(filename: str = "agent_workflow.png"):
     """
-    Generate a visualization of the agent workflow DAG (Planner -> Analysts -> Critic -> Synthesizer).
-    Saves the diagram as a PNG.
+    Simple static diagram via matplotlib (boxes + arrows).
     """
-    fig, ax = plt.subplots(figsize=(6,6))
-    ax.axis('off')  # no axes
-    # Define positions for nodes
-    positions = {
-        "Planner": (0, 1.0),
-        "Market Analysis": (-0.6, 0.8),
-        "Competition Analysis": (-0.2, 0.8),
-        "Financial Analysis": (0.2, 0.8),
-        "GTM Strategy": (0.6, 0.8),
-        "Risks Analysis": (1.0, 0.8),
-        "Critic": (0.2, 0.5),
-        "Synthesizer": (0.2, 0.2)
-    }
-    # Node display (text with box)
-    node_props = dict(boxstyle="round,pad=0.3", fc="#DCEEFF", ec="black", lw=1)
-    # Draw nodes
-    for node, (x,y) in positions.items():
-        ax.text(x, y, node, ha='center', va='center', bbox=node_props, fontsize=9)
-    # Helper to draw arrow
-    def draw_arrow(start, end):
-        sx, sy = positions[start]
-        ex, ey = positions[end]
-        # Draw arrow from center of start to center of end, with some offset to avoid covering text
-        ax.annotate("", xy=(ex, ey+0.02), xytext=(sx, sy-0.02),
-                    arrowprops=dict(arrowstyle="->", color="gray"))
-    # Draw edges/arrows
-    # Planner to all analysis nodes
-    analysis_nodes = ["Market Analysis", "Competition Analysis", "Financial Analysis", "GTM Strategy", "Risks Analysis"]
-    for node in analysis_nodes:
-        draw_arrow("Planner", node)
-        # Each analysis node to Critic
-        draw_arrow(node, "Critic")
-    # Critic to Synthesizer
-    draw_arrow("Critic", "Synthesizer")
-    # Save diagram
-    try:
-        fig.savefig(filename)
-        plt.close(fig)
-        return filename
-    except Exception as e:
-        print(f"Error saving graph image: {e}")
-        return None
+    fig, ax = plt.subplots(figsize=(7,6))
+    ax.axis("off")
+    boxes = [
+        ("Planner", 0.10, 0.85),
+        ("Market", 0.05, 0.65),
+        ("Competition", 0.28, 0.65),
+        ("Financials", 0.51, 0.65),
+        ("GTM", 0.74, 0.65),
+        ("Risks", 0.87, 0.65),
+        ("Critic", 0.51, 0.43),
+        ("Synthesizer", 0.51, 0.20),
+    ]
+    # draw nodes
+    for label, x, y in boxes:
+        ax.text(x, y, label, ha="center", va="center",
+                bbox=dict(boxstyle="round,pad=0.3", fc="#E8F1FF", ec="#1B3B6F"))
+
+    # arrows
+    def arr(x1, y1, x2, y2):
+        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                    arrowprops=dict(arrowstyle="->", color="gray", lw=1.5))
+    # Planner to all analysts
+    arr(0.10, 0.83, 0.05, 0.67); arr(0.10, 0.83, 0.28, 0.67)
+    arr(0.10, 0.83, 0.51, 0.67); arr(0.10, 0.83, 0.74, 0.67)
+    arr(0.10, 0.83, 0.87, 0.67)
+    # Analysts to critic
+    for x in [0.05, 0.28, 0.51, 0.74, 0.87]:
+        arr(x, 0.63, 0.51, 0.45)
+    # Critic to Synth
+    arr(0.51, 0.41, 0.51, 0.22)
+
+    fig.tight_layout()
+    fig.savefig(filename)
+    plt.close(fig)
+    return filename
