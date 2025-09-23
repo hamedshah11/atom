@@ -1,124 +1,82 @@
 import os
-import openai
+from typing import Dict
+from openai import OpenAI
 
-# Retrieve OpenAI API key from environment variable (or configure in Streamlit secrets).
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+# Models
+GPT4_1 = "gpt-4.1"      # planner/critic/synth
+O4_MINI = "o4-mini"      # analysts (faster/cheaper)
 
-# Model names for GPT-4.1 and o4-mini
-GPT4_MODEL = "gpt-4"        # Placeholder for GPT-4.1 model
-O4MINI_MODEL = "gpt-3.5-turbo"  # Placeholder for o4-mini model (using GPT-3.5 as example)
+# Lazy singleton client
+_client = None
+def get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        # OpenAI() will read OPENAI_API_KEY from env, or you can pass api_key=...
+        _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _client
 
-def call_openai_chat(model: str, system_prompt: str, user_prompt: str) -> str:
-    """
-    Helper to call OpenAI ChatCompletion (using updated OpenAI API) and return the assistant message text.
-    """
-    try:
-        # Use the new OpenAI chat completion call (v1.0.0+)
-        response = openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt}
-            ]
-            # You can include other params like temperature, max_tokens, etc., as needed
-        )
-        # Extract the assistant's reply using attribute access (since response is an object in v1+)
-        answer_text = response.choices[0].message.content
-        return answer_text.strip()
-    except Exception as e:
-        # If there's an API error or missing key, return an error message
-        return f"Error: {e}"
+def _chat(model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt}
+        ]
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 def planner_agent(idea: str) -> str:
-    """
-    Uses GPT-4.1 to generate a plan (list of analytical steps) for the given business idea.
-    """
-    system_prompt = ("You are a planning agent that helps break down a business idea into key analysis steps. "
-                     "You will be given a business idea, and you need to output a clear plan outlining what "
-                     "aspects should be analyzed to evaluate this idea. Keep the plan concise and in an ordered list.")
-    user_prompt = f"Business Idea: {idea}\n\nGenerate an analysis plan covering all important aspects."
-    return call_openai_chat(GPT4_MODEL, system_prompt, user_prompt)
+    sys = ("You are a planning agent. Produce a concise ordered list of steps to analyze the business idea "
+           "(market, competition, financials, GTM, risks). Keep it to 4–8 bullets.")
+    usr = f"Business Idea:\n{idea}\n\nCreate the analysis plan."
+    return _chat(GPT4_1, sys, usr, temperature=0.1)
 
 def market_analysis_agent(idea: str) -> str:
-    """
-    Uses o4-mini to analyze market size (TAM, SAM, SOM) for the idea. Asks for numeric estimates and rationale.
-    """
-    system_prompt = ("You are a market analyst agent focusing on market sizing. Analyze the Total Addressable Market (TAM), "
-                     "Serviceable Addressable Market (SAM), and Serviceable Obtainable Market (SOM) for the given business idea. "
-                     "Provide reasoning and estimates for each. End your response with a summary line listing TAM, SAM, SOM values.")
-    user_prompt = f"Business Idea: {idea}\n\nConduct a market size analysis (TAM, SAM, SOM) with estimates."
-    return call_openai_chat(O4MINI_MODEL, system_prompt, user_prompt)
+    sys = ("You are a market sizing analyst. Estimate TAM, SAM, SOM with clear method & assumptions. "
+           "End with a line like: TAM: X, SAM: Y, SOM: Z (include units).")
+    usr = f"Business Idea:\n{idea}\n\nProvide market overview and TAM/SAM/SOM."
+    return _chat(O4_MINI, sys, usr, temperature=0.2)
 
 def competition_analysis_agent(idea: str) -> str:
-    """
-    Uses o4-mini to analyze the competition for the idea, listing key competitors and competitive landscape.
-    """
-    system_prompt = ("You are a competition analyst agent. Identify and analyze the current competition for the given business idea. "
-                     "List key competitors or alternative solutions and briefly discuss how the idea can differentiate itself.")
-    user_prompt = f"Business Idea: {idea}\n\nAnalyze the competitive landscape and main competitors."
-    return call_openai_chat(O4MINI_MODEL, system_prompt, user_prompt)
+    sys = ("You are a competition analyst. Identify 3–6 key competitors/alternatives, compare positioning, "
+           "and summarize opportunities to differentiate.")
+    usr = f"Business Idea:\n{idea}\n\nAnalyze the competitive landscape."
+    return _chat(O4_MINI, sys, usr, temperature=0.2)
 
 def financial_feasibility_agent(idea: str) -> str:
-    """
-    Uses o4-mini to evaluate the financial feasibility of the idea, outlining costs, revenue model, and profitability potential.
-    """
-    system_prompt = ("You are a financial analyst agent. Assess the financial feasibility of the given business idea. "
-                     "Consider startup costs, operating costs, revenue streams, pricing, and potential profitability. "
-                     "Provide a brief financial outlook (e.g., break-even point, funding needed).")
-    user_prompt = f"Business Idea: {idea}\n\nEvaluate the financial feasibility (costs, revenue model, profitability)."
-    return call_openai_chat(O4MINI_MODEL, system_prompt, user_prompt)
+    sys = ("You are a finance analyst. Outline revenue model, pricing, COGS, gross margin, opex buckets, "
+           "rough 3-year outlook, and breakeven logic. Separate assumptions vs. logic.")
+    usr = f"Business Idea:\n{idea}\n\nEvaluate financial feasibility."
+    return _chat(O4_MINI, sys, usr, temperature=0.2)
 
 def gtm_strategy_agent(idea: str) -> str:
-    """
-    Uses o4-mini to propose a go-to-market strategy for the idea, including target customers, marketing channels, and acquisition strategy.
-    """
-    system_prompt = ("You are a marketing strategist agent. For the given business idea, outline a go-to-market strategy. "
-                     "Include target customer segments, key marketing and distribution channels, and tactics for initial customer acquisition.")
-    user_prompt = f"Business Idea: {idea}\n\nOutline a go-to-market strategy."
-    return call_openai_chat(O4MINI_MODEL, system_prompt, user_prompt)
+    sys = ("You are a GTM strategist. Define ICPs, channels, key messages, a 90-day launch plan, and core KPIs. "
+           "Add a simple funnel (impressions→leads→conversions) with baseline assumptions.")
+    usr = f"Business Idea:\n{idea}\n\nPropose GTM strategy."
+    return _chat(O4_MINI, sys, usr, temperature=0.2)
 
 def risks_analysis_agent(idea: str) -> str:
-    """
-    Uses o4-mini to identify key risks and challenges for the idea and possible mitigations.
-    """
-    system_prompt = ("You are a risk analyst agent. Identify the main risks, challenges, or uncertainties associated with the given business idea. "
-                     "Consider market risks, execution risks, competition, regulatory, or financial risks, and suggest possible mitigations.")
-    user_prompt = f"Business Idea: {idea}\n\nIdentify key risks and challenges, with potential mitigations."
-    return call_openai_chat(O4MINI_MODEL, system_prompt, user_prompt)
+    sys = ("You are a risk analyst. List major risks (regulatory, technical, market, execution, finance) with "
+           "likelihood/impact and brief mitigations.")
+    usr = f"Business Idea:\n{idea}\n\nIdentify key risks & mitigations."
+    return _chat(O4_MINI, sys, usr, temperature=0.2)
 
-def critic_agent(idea: str, analyses: dict) -> str:
-    """
-    Uses GPT-4.1 to critique the combined analyses. Points out any missing elements or weaknesses in the analyses.
-    """
-    system_prompt = ("You are a critical evaluator agent. You will receive a business idea and the analyses of various aspects of that idea (market, competition, financial, go-to-market, risks). "
-                     "Review the analyses and point out any gaps, inconsistencies, or additional factors that should be considered. "
-                     "Be constructive and list any missing pieces or questions that need to be addressed.")
-    # Combine all analysis texts for the assistant to review.
-    analyses_text = ""
-    for key, text in analyses.items():
-        analyses_text += f"\nAnalysis - {key}:\n{text}\n"
-    user_prompt = f"Business Idea: {idea}\n{analyses_text}\nProvide a critique of the above analyses."
-    return call_openai_chat(GPT4_MODEL, system_prompt, user_prompt)
+def critic_agent(idea: str, analyses: Dict[str, str]) -> str:
+    sys = ("You are a tough critic. Review the analyses for gaps, contradictions, over-optimism, or missing data. "
+           "Return a bullet list of fixes and questions to validate.")
+    blob = "\n\n".join([f"[{k}]\n{v}" for k, v in analyses.items()])
+    usr = f"Business Idea:\n{idea}\n\nAnalyses:\n{blob}\n\nProvide critique."
+    return _chat(GPT4_1, sys, usr, temperature=0.1)
 
-def synthesizer_agent(idea: str, analyses: dict, critique: str) -> str:
-    """
-    Uses GPT-4.1 to synthesize a final report from all analyses and critique.
-    Outputs a comprehensive business report including a Lean Canvas, Market Analysis, and Feasibility.
-    """
-    system_prompt = ("You are a synthesis agent. You will compile a comprehensive business analysis report based on a business idea, several analytical outputs (market, competition, financial, go-to-market, risks), and a critique. "
-                     "Your report should include:\n"
-                     "- A Lean Canvas summary of the idea (cover key points like problem, solution, unique value, customer segments, revenue streams, cost structure, etc.).\n"
-                     "- A Market Analysis section (summarize TAM/SAM/SOM and market characteristics).\n"
-                     "- A Financial Feasibility section (startup costs, revenue potential, profitability timeline).\n"
-                     "Integrate insights from the competition, go-to-market, and risks analyses as well. "
-                     "End with a conclusion on viability. Use clear headings and concise language.")
-    analyses_text = ""
-    for key, text in analyses.items():
-        analyses_text += f"\n{key} Analysis:\n{text}\n"
-    # Include critique as well if available
-    if critique:
-        analyses_text += f"\nCritic Feedback:\n{critique}\n"
-    user_prompt = f"Business Idea: {idea}\n\nGenerate a final report based on all the above information."
-    return call_openai_chat(GPT4_MODEL, system_prompt, user_prompt)
+def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str) -> str:
+    sys = ("You are a precise management consultant. Synthesize into:\n"
+           "1) LEAN CANVAS (Problem, Customer Segments, UVP, Solution, Channels, Revenue, Costs, Key Metrics, Unfair Advantage)\n"
+           "2) MARKET ANALYSIS (TAM/SAM/SOM + method; competitor summary)\n"
+           "3) FEASIBILITY (unit econ, breakeven, risks, go/no-go)\n"
+           "Integrate the critique as caveats. Output Markdown.")
+    blob = "\n\n".join([f"{k} Analysis:\n{v}" for k, v in analyses.items()])
+    usr = (f"Business Idea:\n{idea}\n\nInputs:\n{blob}\n\nCritique:\n{critique}\n\n"
+           "Produce the final consolidated report in Markdown.")
+    return _chat(GPT4_1, sys, usr, temperature=0.1)
