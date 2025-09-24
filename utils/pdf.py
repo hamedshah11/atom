@@ -2,8 +2,7 @@ from fpdf import FPDF
 
 def generate_analysis_pdf(
     idea: str, plan: str, market: str, competition: str, financial: str,
-    gtm: str, risks: str, critic: str, final_report: str,
-    chart_path: str = None, graph_path: str = None
+    gtm: str, risks: str, critic: str, final_report: str
 ) -> bytes | None:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=12)
@@ -24,20 +23,6 @@ def generate_analysis_pdf(
     h("Risks Analysis");          p(risks)
     if critic: h("Critique");     p(critic)
     h("Final Synthesis Report");  p(final_report)
-
-    if chart_path or graph_path:
-        pdf.add_page()
-        h("Visualizations")
-        if chart_path:
-            try:
-                pdf.image(chart_path, w=170); pdf.ln(4); p("Figure: TAM/SAM/SOM")
-            except Exception as e:
-                p(f"(Failed to load chart image: {e})")
-        if graph_path:
-            try:
-                pdf.image(graph_path, w=170); pdf.ln(4); p("Figure: Agent Workflow")
-            except Exception as e:
-                p(f"(Failed to load graph image: {e})")
 
     try:
         return pdf.output(dest="S").encode("latin-1")
