@@ -1,4 +1,4 @@
-from typing import TypedDict, Dict
+from typing import TypedDict, Dict, Tuple
 from langgraph.graph import StateGraph, START, END
 from backend import agents
 
@@ -12,24 +12,43 @@ class IdeaState(TypedDict, total=False):
     risks: str
     critic: str
     final_report: str
+    # Track which model actually answered each step
+    models: Dict[str, str]
+
+def _init_models(state: IdeaState):
+    if "models" not in state or state["models"] is None:
+        state["models"] = {}
 
 def node_planner(state: IdeaState) -> Dict:
-    return {"plan": agents.planner_agent(state["idea"])}
+    _init_models(state)
+    out, m = agents.planner_agent(state["idea"])
+    state["models"]["planner"] = m
+    return {"plan": out, "models": state["models"]}
 
 def node_market(state: IdeaState) -> Dict:
-    return {"market": agents.market_analysis_agent(state["idea"])}
+    out, m = agents.market_analysis_agent(state["idea"])
+    state["models"]["market"] = m
+    return {"market": out, "models": state["models"]}
 
 def node_competition(state: IdeaState) -> Dict:
-    return {"competition": agents.competition_analysis_agent(state["idea"])}
+    out, m = agents.competition_analysis_agent(state["idea"])
+    state["models"]["competition"] = m
+    return {"competition": out, "models": state["models"]}
 
 def node_financial(state: IdeaState) -> Dict:
-    return {"financial": agents.financial_feasibility_agent(state["idea"])}
+    out, m = agents.financial_feasibility_agent(state["idea"])
+    state["models"]["financial"] = m
+    return {"financial": out, "models": state["models"]}
 
 def node_gtm(state: IdeaState) -> Dict:
-    return {"gtm": agents.gtm_strategy_agent(state["idea"])}
+    out, m = agents.gtm_strategy_agent(state["idea"])
+    state["models"]["gtm"] = m
+    return {"gtm": out, "models": state["models"]}
 
 def node_risks(state: IdeaState) -> Dict:
-    return {"risks": agents.risks_analysis_agent(state["idea"])}
+    out, m = agents.risks_analysis_agent(state["idea"])
+    state["models"]["risks"] = m
+    return {"risks": out, "models": state["models"]}
 
 def node_critic(state: IdeaState) -> Dict:
     analyses = {
@@ -39,7 +58,9 @@ def node_critic(state: IdeaState) -> Dict:
         "GTM": state.get("gtm", ""),
         "Risks": state.get("risks", "")
     }
-    return {"critic": agents.critic_agent(state["idea"], analyses)}
+    out, m = agents.critic_agent(state["idea"], analyses)
+    state["models"]["critic"] = m
+    return {"critic": out, "models": state["models"]}
 
 def node_synth(state: IdeaState) -> Dict:
     analyses = {
@@ -49,7 +70,9 @@ def node_synth(state: IdeaState) -> Dict:
         "GTM": state.get("gtm", ""),
         "Risks": state.get("risks", "")
     }
-    return {"final_report": agents.synthesizer_agent(state["idea"], analyses, state.get("critic", ""))}
+    out, m = agents.synthesizer_agent(state["idea"], analyses, state.get("critic", ""))
+    state["models"]["synth"] = m
+    return {"final_report": out, "models": state["models"]}
 
 def build_graph():
     g = StateGraph(IdeaState)
