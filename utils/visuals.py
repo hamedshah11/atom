@@ -8,13 +8,15 @@ def _parse_val(s: str):
         return None
     num = float(m.group(1).replace(",", ""))
     unit = (m.group(2) or "").lower()
+    # Normalize to Millions
     if unit == "b":
         num *= 1000.0
     elif unit == "k":
         num /= 1000.0
-    return num  # in Millions
+    return num
 
 def extract_tam_sam_som(text: str):
+    # find a line that contains TAM, SAM, SOM
     lines = [ln.strip() for ln in text.splitlines() if "TAM" in ln and "SAM" in ln and "SOM" in ln]
     if not lines:
         return (None, None, None)
@@ -34,7 +36,7 @@ def make_market_chart(market_text: str, filename: str = "tam_sam_som_chart.png")
     ax.set_title("Market Size (Millions)")
     ax.set_ylabel("Millions")
     for i, v in enumerate(vals):
-        ax.text(i, v * 1.02, f"{v:.2f}", ha="center", fontsize=9)
+        ax.text(i, v * 1.02 if v else 0.02, f"{v:.2f}", ha="center", fontsize=9)
     fig.tight_layout()
     fig.savefig(filename)
     plt.close(fig)
