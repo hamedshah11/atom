@@ -1,9 +1,10 @@
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from openai import OpenAI
 
-# Default model (override via env/Streamlit secrets: MODEL_ALL="gpt-5-mini" etc.)
-MODEL_ALL = os.getenv("MODEL_ALL", "gpt-5")
+# Default model for all agents (override in secrets or env if needed)
+PRIMARY_MODEL = os.getenv("MODEL_ALL", "gpt-5")
+FALLBACKS = ["gpt-5-mini", "gpt-4.1"]  # used only if primary throws model/access errors
 
 _client: Optional[OpenAI] = None
 def get_client() -> OpenAI:
@@ -15,81 +16,98 @@ def get_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
-def _respond(
-    instructions: str,
-    prompt: str,
-    *,
-    model: str = MODEL_ALL,
-    effort: str = "medium",          # minimal | low | medium | high
-    verbosity: str | None = None,    # low | medium | high
-    max_tokens: int = 1200,
-) -> str:
-    """
-    Unified Responses API call (GPT-5-ready).
-    - Uses 'instructions' for system guidance, 'input' for user content.
-    - Controls: reasoning.effort, text.verbosity, max_output_tokens.
-    - Avoids temperature/top_p (not needed for GPT-5).
-    """
+def _call_responses(model: str, instructions: str, prompt: str,
+                    effort: str, verbosity: Optional[str], max_tokens: int):
     client = get_client()
     kwargs = {
         "model": model,
         "instructions": instructions,
         "input": prompt,
-        "reasoning": {"effort": effort},
+        "reasoning": {"effort": effort},   # minimal | low | medium | high
         "max_output_tokens": max_tokens,
+        "store": False,                    # stateless for Streamlit Cloud
     }
     if verbosity:
-        kwargs["text"] = {"verbosity": verbosity}
+        kwargs["text"] = {"verbosity": verbosity}  # low | medium | high
+    return client.responses.create(**kwargs)
 
-    resp = client.responses.create(**kwargs)
-    return (resp.output_text or "").strip()
+def _respond(instructions: str, prompt: str, *,
+             effort: str = "medium", verbosity: Optional[str] = None,
+             max_tokens: int = 1200) -> Tuple[str, str]:
+    """
+    Returns (text, model_used). Attempts PRIMARY_MODEL, then fallbacks on specific API errors.
+    """
+    tried = []
+    models_to_try = [PRIMARY_MODEL] + [m for m in FALLBACKS if m != PRIMARY_MODEL]
 
-# ---------------- Agents with tuned params ----------------
+    last_err = None
+    for m in models_to_try:
+        try:
+            resp = _call_responses(m, instructions, prompt, effort, verbosity, max_tokens)
+            return (resp.output_text.strip() if resp.output_text else "", m)
+        except Exception as e:
+            last_err = e
+            tried.append(m)
+            # Failover only on common model/access errors; otherwise re-raise quickly
+            msg = str(e).lower()
+            recoverable = any(k in msg for k in [
+                "model not found", "does not exist", "unknown model",
+                "insufficient_quota", "access", "unsupported", "not available"
+            ])
+            if not recoverable and m == models_to_try[0]:
+                # if it's not a typical model/access error on the primary, re-raise
+                raise
+            # else: try next model
+            continue
+    # If we get here, all attempts failed
+    raise RuntimeError(f"OpenAI Responses call failed for models {tried}: {last_err}")
 
-def planner_agent(idea: str) -> str:
+# ---------------- Agents with tuned params (GPT-5-friendly) ----------------
+
+def planner_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a planning agent. Produce a concise ordered list of steps to analyze the business idea "
              "(market, competition, financials, GTM, risks). Keep it to 4–8 bullets.")
     prompt = f"Business Idea:\n{idea}\n\nCreate the analysis plan."
     return _respond(instr, prompt, effort="minimal", verbosity="low", max_tokens=450)
 
-def market_analysis_agent(idea: str) -> str:
+def market_analysis_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a market sizing analyst. Estimate TAM, SAM, SOM with clear method & assumptions. "
              "End with a line like: TAM: X, SAM: Y, SOM: Z (include units).")
     prompt = f"Business Idea:\n{idea}\n\nProvide market overview and TAM/SAM/SOM."
     return _respond(instr, prompt, effort="medium", verbosity="medium", max_tokens=1000)
 
-def competition_analysis_agent(idea: str) -> str:
+def competition_analysis_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a competition analyst. Identify 3–6 key competitors/alternatives, compare positioning, "
              "summarize opportunities to differentiate, and note any moats.")
     prompt = f"Business Idea:\n{idea}\n\nAnalyze the competitive landscape."
     return _respond(instr, prompt, effort="medium", verbosity="medium", max_tokens=950)
 
-def financial_feasibility_agent(idea: str) -> str:
+def financial_feasibility_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a finance analyst. Outline revenue model, pricing, COGS, gross margin, opex buckets, "
              "rough 3-year outlook, and breakeven logic. Separate assumptions vs. logic explicitly.")
     prompt = f"Business Idea:\n{idea}\n\nEvaluate financial feasibility."
     return _respond(instr, prompt, effort="medium", verbosity="medium", max_tokens=1050)
 
-def gtm_strategy_agent(idea: str) -> str:
+def gtm_strategy_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a GTM strategist. Define ICPs, channels, key messages, a 90-day launch plan, and core KPIs. "
              "Add a simple funnel (impressions→leads→conversions) with baseline assumptions.")
     prompt = f"Business Idea:\n{idea}\n\nPropose GTM strategy."
     return _respond(instr, prompt, effort="low", verbosity="low", max_tokens=850)
 
-def risks_analysis_agent(idea: str) -> str:
+def risks_analysis_agent(idea: str) -> Tuple[str, str]:
     instr = ("You are a risk analyst. List major risks (regulatory, technical, market, execution, finance) with "
              "likelihood/impact and brief mitigations.")
     prompt = f"Business Idea:\n{idea}\n\nIdentify key risks & mitigations."
     return _respond(instr, prompt, effort="low", verbosity="low", max_tokens=800)
 
-def critic_agent(idea: str, analyses: Dict[str, str]) -> str:
+def critic_agent(idea: str, analyses: Dict[str, str]) -> Tuple[str, str]:
     instr = ("You are a tough critic. Review the analyses for gaps, contradictions, over-optimism, or missing data. "
              "Return a bullet list of fixes and questions to validate.")
     blob = "\n\n".join([f"[{k}]\n{v}" for k, v in analyses.items()])
     prompt = f"Business Idea:\n{idea}\n\nAnalyses:\n{blob}\n\nProvide critique."
     return _respond(instr, prompt, effort="medium", verbosity="low", max_tokens=850)
 
-def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str) -> str:
+def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str) -> Tuple[str, str]:
     instr = ("You are a precise management consultant. Synthesize into:\n"
              "1) LEAN CANVAS (Problem, Customer Segments, UVP, Solution, Channels, Revenue, Costs, Key Metrics, Unfair Advantage)\n"
              "2) MARKET ANALYSIS (TAM/SAM/SOM + method; competitor summary)\n"
