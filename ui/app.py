@@ -4,10 +4,10 @@ import streamlit as st
 
 st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
 
-# --- Streamlit secrets → environment BEFORE importing backend ---
+# --- Secrets → env before imports (Streamlit Cloud friendly) ---
 if "openai_api_key" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
-# Optional: allow overriding model via secrets (lowercase keys in secrets.toml)
+# Optional overrides
 if "model_all" in st.secrets:
     os.environ["MODEL_ALL"] = st.secrets["model_all"]
 
@@ -17,17 +17,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend import agents
+from backend.run_graph import run_full  # LangGraph path
 from utils.visuals import make_market_chart, draw_agent_graph
 from utils.pdf import generate_analysis_pdf
 
-st.title("Business Idea Analyzer")
+st.title("Business Idea Analyzer (GPT-5 · Responses API)")
 st.write(
-    "Enter a business idea. This app runs multiple specialist AI agents "
-    "(Planner → Market → Competition → Financials → GTM → Risks → Critic → Synthesizer) "
-    "and returns a Lean Canvas, Market Analysis (with TAM/SAM/SOM), and Feasibility."
+    "Enter a business idea. This app runs specialist AI agents via the **Responses API** (Planner → Market → "
+    "Competition → Financials → GTM → Risks → Critic → Synthesizer) to produce a Lean Canvas, Market Analysis (TAM/SAM/SOM), "
+    "and a Feasibility/Go-No-Go summary. Different reasoning efforts/verbosity are used per step."
 )
 
-# Fallback: local dev key entry
+# Fallback key entry (local dev)
 if not os.getenv("OPENAI_API_KEY"):
     with st.expander("🔑 Configure OpenAI API key"):
         key = st.text_input("OpenAI API Key", type="password")
@@ -37,53 +38,69 @@ if not os.getenv("OPENAI_API_KEY"):
 
 idea = st.text_area("Your business idea", height=140, placeholder="Describe your idea...")
 
-run = st.button("Analyze Idea", type="primary")
+colA, colB = st.columns(2)
+with colA:
+    run_seq = st.button("Analyze (sequential agents)")
+with colB:
+    run_graph_btn = st.button("Analyze (LangGraph pipeline)")
 
-if run:
+if (run_seq or run_graph_btn):
     if not idea.strip():
         st.error("Please enter a business idea.")
         st.stop()
 
     col1, col2 = st.columns([2,1])
     with col1:
-        st.subheader("1) Planner")
-        plan = agents.planner_agent(idea)
-        st.write(plan)
+        if run_seq:
+            # --- Sequential path (direct agents) ---
+            st.subheader("1) Planner")
+            plan = agents.planner_agent(idea);           st.write(plan)
 
-        st.subheader("2) Market Analysis")
-        market = agents.market_analysis_agent(idea)
-        st.write(market)
+            st.subheader("2) Market Analysis")
+            market = agents.market_analysis_agent(idea); st.write(market)
 
-        st.subheader("3) Competition")
-        competition = agents.competition_analysis_agent(idea)
-        st.write(competition)
+            st.subheader("3) Competition")
+            competition = agents.competition_analysis_agent(idea); st.write(competition)
 
-        st.subheader("4) Financial Feasibility")
-        financial = agents.financial_feasibility_agent(idea)
-        st.write(financial)
+            st.subheader("4) Financial Feasibility")
+            financial = agents.financial_feasibility_agent(idea); st.write(financial)
 
-        st.subheader("5) Go-to-Market (GTM)")
-        gtm = agents.gtm_strategy_agent(idea)
-        st.write(gtm)
+            st.subheader("5) Go-to-Market (GTM)")
+            gtm = agents.gtm_strategy_agent(idea);       st.write(gtm)
 
-        st.subheader("6) Risks")
-        risks = agents.risks_analysis_agent(idea)
-        st.write(risks)
+            st.subheader("6) Risks")
+            risks = agents.risks_analysis_agent(idea);    st.write(risks)
 
-        st.subheader("7) Critique")
-        analyses = {
-            "Market": market,
-            "Competition": competition,
-            "Financial": financial,
-            "GTM": gtm,
-            "Risks": risks,
-        }
-        critic = agents.critic_agent(idea, analyses)
-        st.write(critic)
+            st.subheader("7) Critique")
+            analyses = {
+                "Market": market, "Competition": competition, "Financial": financial, "GTM": gtm, "Risks": risks
+            }
+            critic = agents.critic_agent(idea, analyses); st.write(critic)
 
-        st.subheader("8) Final Report")
-        final_md = agents.synthesizer_agent(idea, analyses, critic)
-        st.markdown(final_md)
+            st.subheader("8) Final Report")
+            final_md = agents.synthesizer_agent(idea, analyses, critic)
+            st.markdown(final_md)
+
+        else:
+            # --- LangGraph path ---
+            final_state = run_full(idea)
+            plan        = final_state.get("plan", "")
+            market      = final_state.get("market", "")
+            competition = final_state.get("competition", "")
+            financial   = final_state.get("financial", "")
+            gtm         = final_state.get("gtm", "")
+            risks       = final_state.get("risks", "")
+            critic      = final_state.get("critic", "")
+            final_md    = final_state.get("final_report", "")
+
+            st.subheader("1) Planner");                 st.write(plan)
+            st.subheader("2) Market Analysis");         st.write(market)
+            st.subheader("3) Competition");             st.write(competition)
+            st.subheader("4) Financial Feasibility");   st.write(financial)
+            st.subheader("5) Go-to-Market (GTM)");      st.write(gtm)
+            st.subheader("6) Risks");                   st.write(risks)
+            st.subheader("7) Critique");                st.write(critic)
+            st.subheader("8) Final Report");            st.markdown(final_md)
 
     with col2:
         st.subheader("Visuals")
