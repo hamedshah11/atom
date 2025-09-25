@@ -15,15 +15,18 @@ def generate_analysis_pdf(
     pdf.ln(2)
 
     h("Business Idea");           p(idea)
-    if plan: h("Analysis Plan");  p(plan)
+    if plan:
+        h("Analysis Plan");       p(plan)
     h("Market Analysis");         p(market)
     h("Competition Analysis");    p(competition)
     h("Financial Feasibility");   p(financial)
     h("Go-to-Market Strategy");   p(gtm)
     h("Risks Analysis");          p(risks)
-    if critic: h("Critique");     p(critic)
+    if critic:
+        h("Critique");           p(critic)
     h("Final Synthesis Report");  p(final_report)
 
+    # (Removed visualizations per requirements.)
     try:
         return pdf.output(dest="S").encode("latin-1")
     except Exception:
