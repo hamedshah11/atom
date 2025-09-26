@@ -1,19 +1,17 @@
 import os
+import json
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 # ===== Model & behavior knobs (override via Streamlit secrets) =====
-MODEL_ALL      = os.getenv("MODEL_ALL",      os.getenv("model_all", "gpt-4-turbo"))
+MODEL_ALL      = os.getenv("MODEL_ALL",      os.getenv("model_all", "gpt-3.5-turbo"))
 VERBOSITY_ALL  = os.getenv("VERBOSITY",      os.getenv("verbosity", "low"))
 
 # Serper toggle (cheaper search)
 USE_SERPER     = os.getenv("USE_SERPER", "0") == "1"
 
-# Optional rate limiting
-try:
-    from backend.rate_limiter import api_rate_limiter
-except ImportError:
-    api_rate_limiter = None
+# Debug mode
+DEBUG_MODE = os.getenv("DEBUG_MODE", "1") == "1"
 
 _client: Optional[OpenAI] = None
 def get_client() -> OpenAI:
@@ -25,39 +23,45 @@ def get_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
+def _debug_log(message: str):
+    """Print debug messages if debug mode is on"""
+    if DEBUG_MODE:
+        print(f"[DEBUG] {message}")
+
 def _chat_completion(**kwargs) -> Any:
-    """Use the actual OpenAI chat completions API with optional rate limiting"""
-    if api_rate_limiter:
-        api_rate_limiter.wait_if_needed()
-    return get_client().chat.completions.create(**kwargs)
+    """Use the actual OpenAI chat completions API"""
+    _debug_log(f"Making API call with model: {kwargs.get('model', 'default')}")
+    _debug_log(f"Messages: {json.dumps(kwargs.get('messages', []), indent=2)[:500]}...")
+    
+    try:
+        response = get_client().chat.completions.create(**kwargs)
+        _debug_log(f"API Response received. Choices: {len(response.choices)}")
+        return response
+    except Exception as e:
+        _debug_log(f"API Error: {type(e).__name__}: {str(e)}")
+        raise
 
 def _not_empty(text: Optional[str]) -> bool:
     return bool(text and text.strip())
 
 def _safe_output_text(resp: Any) -> str:
-    """Extract text from OpenAI chat completion response"""
+    """Extract text from OpenAI chat completion response with debugging"""
+    if resp is None:
+        _debug_log("Response is None")
+        return ""
+    
     if hasattr(resp, 'choices') and resp.choices:
-        return resp.choices[0].message.content.strip()
+        choice = resp.choices[0]
+        if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
+            content = choice.message.content
+            _debug_log(f"Extracted content: {content[:100]}..." if content else "Content is None/empty")
+            return content.strip() if content else ""
+        else:
+            _debug_log("No message.content in choice")
+    else:
+        _debug_log("No choices in response")
+    
     return ""
-
-def _try_payloads(payloads: List[Dict[str, Any]]) -> str:
-    """
-    Try a list of chat completion payloads until one returns non-empty text.
-    If all succeed but return empty, raise a RuntimeError so callers surface an error instead of blank UI.
-    """
-    last_exc: Optional[Exception] = None
-    for p in payloads:
-        try:
-            r = _chat_completion(**p)
-            txt = _safe_output_text(r)
-            if _not_empty(txt):
-                return txt
-        except Exception as e:
-            last_exc = e
-            continue
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("LLM returned empty output for all attempts")
 
 def _respond(
     instructions: str,
@@ -69,8 +73,13 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    Robust OpenAI Chat API helper using the actual API format
+    Robust OpenAI Chat API helper with detailed debugging
     """
+    _debug_log(f"\n=== Starting _respond ===")
+    _debug_log(f"Model: {model}, Max tokens: {max_tokens}")
+    _debug_log(f"Instructions length: {len(instructions)}")
+    _debug_log(f"Prompt length: {len(prompt)}")
+    
     # Build system prompt with verbosity guidance
     system_content = instructions
     if verbosity == "low":
@@ -86,37 +95,59 @@ def _respond(
         {"role": "user", "content": prompt}
     ]
     
-    # Create different payload shapes to try
-    shapes: List[Dict[str, Any]] = []
-    
-    # Shape A: Standard request with temperature based on effort
+    # Temperature based on effort
     temperature_map = {"minimal": 0.3, "low": 0.5, "medium": 0.7, "high": 0.9}
-    temp = temperature_map.get(effort, 0.7)
+    temperature = temperature_map.get(effort, 0.7)
     
-    shapes.append({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temp
-    })
-    
-    # Shape B: Lower temperature for more focused output
-    shapes.append({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.2
-    })
-    
-    # Shape C: Higher max tokens if needed
-    shapes.append({
-        "model": model,
-        "messages": messages,
-        "max_tokens": min(max_tokens * 2, 4096),
-        "temperature": temp
-    })
-    
-    return _try_payloads(shapes)
+    try:
+        _debug_log(f"Calling OpenAI API...")
+        response = _chat_completion(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        text = _safe_output_text(response)
+        
+        if not _not_empty(text):
+            _debug_log("WARNING: Received empty response from API")
+            # Try with a simpler prompt
+            _debug_log("Retrying with simplified prompt...")
+            messages = [
+                {"role": "user", "content": f"{instructions}\n\n{prompt[:500]}"}  # Truncate if too long
+            ]
+            response = _chat_completion(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.5
+            )
+            text = _safe_output_text(response)
+        
+        if not _not_empty(text):
+            # Last attempt - very simple
+            _debug_log("Final attempt with minimal prompt...")
+            response = _chat_completion(
+                model=model,
+                messages=[{"role": "user", "content": "Please respond with any text to confirm the API is working."}],
+                max_tokens=50,
+                temperature=0
+            )
+            test_text = _safe_output_text(response)
+            if _not_empty(test_text):
+                _debug_log(f"API is working, but original prompt may be problematic. Test response: {test_text}")
+                return "⚠️ API is working but couldn't generate content for this specific request. Try simplifying the input."
+            else:
+                _debug_log("API is not returning any content at all")
+                raise RuntimeError("API is not returning any content")
+        
+        _debug_log(f"Success! Returning {len(text)} characters")
+        return text
+        
+    except Exception as e:
+        _debug_log(f"Exception in _respond: {type(e).__name__}: {str(e)}")
+        raise
 
 # ====================== Optional: Serper helpers ======================
 def _format_serper_block(results: list[dict], label: str = "External Signals") -> str:
@@ -133,6 +164,7 @@ def _format_serper_block(results: list[dict], label: str = "External Signals") -
 # ======================= Agents (all return str) =======================
 
 def planner_agent(idea: str) -> str:
+    _debug_log("\n>>> PLANNER AGENT CALLED")
     instr = (
         "You are a planning agent. Produce a concise ordered list of steps to analyze the business idea "
         "(market, competition, financials, GTM, risks). Keep it to 4–8 bullets."
@@ -141,16 +173,12 @@ def planner_agent(idea: str) -> str:
     return _respond(instr, prompt, effort="minimal", verbosity="low", max_tokens=420)
 
 def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
-    """
-    Region-aware, compact, structured. Uses Serper (if enabled) to ground assumptions.
-    Guarantees a final single line: TAM: <X>, SAM: <Y>, SOM: <Z> (with units).
-    Never returns empty.
-    """
+    _debug_log("\n>>> MARKET ANALYSIS AGENT CALLED")
     serper_block = ""
     if USE_SERPER:
         try:
             from backend.serper import web_search_serper
-            q = f"{region} padel market size participation rate average court price"
+            q = f"{region} market size trends statistics"
             results = web_search_serper(q, num=5)
             serper_block = _format_serper_block(results)
         except Exception:
@@ -159,10 +187,9 @@ def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     instr = (
         "You are a market sizing analyst. Using the target region and reasonable public assumptions, "
         "estimate TAM, SAM, and SOM for the proposed business. Keep output compact, with:\n"
-        "1) A 2–4 sentence method & assumptions (participation rates, price, capacity, etc.). If you used external signals, mention them.\n"
+        "1) A 2–4 sentence method & assumptions (participation rates, price, capacity, etc.).\n"
         "2) A 3-row Markdown table with columns: Segment | Units | Value\n"
         "3) A FINAL single line strictly formatted as: TAM: <X>, SAM: <Y>, SOM: <Z> (include units)\n"
-        "If the region is Pakistan, default currency to PKR; if converting, state FX briefly in the method."
     )
     prompt = (
         f"Business Idea:\n{idea}\n\n"
@@ -176,11 +203,12 @@ def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     return txt
 
 def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
+    _debug_log("\n>>> COMPETITION ANALYSIS AGENT CALLED")
     serper_block = ""
     if USE_SERPER:
         try:
             from backend.serper import web_search_serper
-            q = f"{region} padel clubs competitors booking platforms"
+            q = f"{region} competitors market players industry analysis"
             serper_block = _format_serper_block(web_search_serper(q, num=5))
         except Exception:
             serper_block = ""
@@ -195,6 +223,7 @@ def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     return txt
 
 def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
+    _debug_log("\n>>> FINANCIAL FEASIBILITY AGENT CALLED")
     instr = (
         "You are a finance analyst. Outline revenue model, price points, COGS, gross margin, opex buckets, "
         "rough 3-year outlook, and breakeven logic. Separate assumptions vs. logic. Keep it compact."
@@ -206,6 +235,7 @@ def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
     return txt
 
 def gtm_strategy_agent(idea: str, region: str = "Pakistan") -> str:
+    _debug_log("\n>>> GTM STRATEGY AGENT CALLED")
     instr = (
         "You are a GTM strategist. Define ICPs, channels, key messages, a 90-day launch plan, and core KPIs. "
         "Add a simple funnel (impressions→leads→conversions) with baseline assumptions."
@@ -217,6 +247,7 @@ def gtm_strategy_agent(idea: str, region: str = "Pakistan") -> str:
     return txt
 
 def risks_analysis_agent(idea: str, region: str = "Pakistan") -> str:
+    _debug_log("\n>>> RISKS ANALYSIS AGENT CALLED")
     instr = (
         "You are a risk analyst. List major risks (regulatory, technical, market, execution, finance) with "
         "likelihood/impact and brief mitigations."
@@ -228,6 +259,7 @@ def risks_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     return txt
 
 def critic_agent(idea: str, analyses: Dict[str, str], region: str = "Pakistan") -> str:
+    _debug_log("\n>>> CRITIC AGENT CALLED")
     instr = (
         "You are a tough critic. Review the analyses for gaps, contradictions, over-optimism, or missing data. "
         "Return a bullet list of fixes and the top questions to validate in the specified region."
@@ -240,6 +272,7 @@ def critic_agent(idea: str, analyses: Dict[str, str], region: str = "Pakistan") 
     return txt
 
 def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str, region: str = "Pakistan") -> str:
+    _debug_log("\n>>> SYNTHESIZER AGENT CALLED")
     instr = (
         "You are a precise management consultant. Synthesize into:\n"
         "• Executive Summary (3–6 bullets; explicit go/no-go)\n"
