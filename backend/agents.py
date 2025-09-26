@@ -3,11 +3,17 @@ from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 # ===== Model & behavior knobs (override via Streamlit secrets) =====
-MODEL_ALL      = os.getenv("MODEL_ALL",      os.getenv("model_all", "gpt-5"))
+MODEL_ALL      = os.getenv("MODEL_ALL",      os.getenv("model_all", "gpt-4-turbo"))
 VERBOSITY_ALL  = os.getenv("VERBOSITY",      os.getenv("verbosity", "low"))
 
 # Serper toggle (cheaper search)
 USE_SERPER     = os.getenv("USE_SERPER", "0") == "1"
+
+# Optional rate limiting
+try:
+    from backend.rate_limiter import api_rate_limiter
+except ImportError:
+    api_rate_limiter = None
 
 _client: Optional[OpenAI] = None
 def get_client() -> OpenAI:
@@ -19,30 +25,35 @@ def get_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
-def _responses(**kwargs) -> Any:
-    return get_client().responses.create(**kwargs)
+def _chat_completion(**kwargs) -> Any:
+    """Use the actual OpenAI chat completions API with optional rate limiting"""
+    if api_rate_limiter:
+        api_rate_limiter.wait_if_needed()
+    return get_client().chat.completions.create(**kwargs)
 
 def _not_empty(text: Optional[str]) -> bool:
     return bool(text and text.strip())
 
 def _safe_output_text(resp: Any) -> str:
-    return (resp.output_text or "").strip()
+    """Extract text from OpenAI chat completion response"""
+    if hasattr(resp, 'choices') and resp.choices:
+        return resp.choices[0].message.content.strip()
+    return ""
 
 def _try_payloads(payloads: List[Dict[str, Any]]) -> str:
     """
-    Try a list of Responses payloads until one returns non-empty text.
+    Try a list of chat completion payloads until one returns non-empty text.
     If all succeed but return empty, raise a RuntimeError so callers surface an error instead of blank UI.
     """
     last_exc: Optional[Exception] = None
     for p in payloads:
         try:
-            r = _responses(**p)
+            r = _chat_completion(**p)
             txt = _safe_output_text(r)
             if _not_empty(txt):
                 return txt
         except Exception as e:
             last_exc = e
-            # keep trying next shape
             continue
     if last_exc:
         raise last_exc
@@ -58,69 +69,53 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    Robust Responses API helper:
-      • Tries several request shapes (instructions+string, messages array, with/without reasoning/verbosity).
-      • Adjusts token budget & verbosity if needed.
-      • Never returns empty; throws if no variant produced text.
+    Robust OpenAI Chat API helper using the actual API format
     """
-    # Common base
-    base: Dict[str, Any] = {
-        "model": model,
-        "store": False,
-    }
-
-    shapes: List[Dict[str, Any]] = []
-
-    # A) instructions + input (string), full controls
-    sA = dict(base)
-    sA["instructions"] = instructions
-    sA["input"] = prompt
-    sA["max_output_tokens"] = max_tokens
-    if effort:
-        sA["reasoning"] = {"effort": effort}
-    if verbosity:
-        sA["text"] = {"verbosity": verbosity}
-    shapes.append(sA)
-
-    # B) messages array (system + user), same controls
-    sB = dict(base)
-    sB["input"] = [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": prompt},
+    # Build system prompt with verbosity guidance
+    system_content = instructions
+    if verbosity == "low":
+        system_content += "\n\nBe concise and to the point."
+    elif verbosity == "medium":
+        system_content += "\n\nProvide moderate detail."
+    elif verbosity == "high":
+        system_content += "\n\nProvide comprehensive detail."
+    
+    # Build the messages for chat completion
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": prompt}
     ]
-    sB["max_output_tokens"] = max_tokens
-    if effort:
-        sB["reasoning"] = {"effort": effort}
-    if verbosity:
-        sB["text"] = {"verbosity": verbosity}
-    shapes.append(sB)
-
-    # C) instructions + input, drop verbosity
-    sC = dict(sA)
-    sC.pop("text", None)
-    shapes.append(sC)
-
-    # D) messages array, drop verbosity
-    sD = dict(sB)
-    sD.pop("text", None)
-    shapes.append(sD)
-
-    # E) instructions + input, drop reasoning too
-    sE = dict(sC)
-    sE.pop("reasoning", None)
-    shapes.append(sE)
-
-    # F) messages array, drop reasoning too
-    sF = dict(sD)
-    sF.pop("reasoning", None)
-    shapes.append(sF)
-
-    # G) bump tokens a bit and verbosity → medium, messages array
-    sG = dict(sB)
-    sG["max_output_tokens"] = max(max_tokens, 1200)
-    sG["text"] = {"verbosity": "medium"}
-    shapes.append(sG)
-
+    
+    # Create different payload shapes to try
+    shapes: List[Dict[str, Any]] = []
+    
+    # Shape A: Standard request with temperature based on effort
+    temperature_map = {"minimal": 0.3, "low": 0.5, "medium": 0.7, "high": 0.9}
+    temp = temperature_map.get(effort, 0.7)
+    
+    shapes.append({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temp
+    })
+    
+    # Shape B: Lower temperature for more focused output
+    shapes.append({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.2
+    })
+    
+    # Shape C: Higher max tokens if needed
+    shapes.append({
+        "model": model,
+        "messages": messages,
+        "max_tokens": min(max_tokens * 2, 4096),
+        "temperature": temp
+    })
+    
     return _try_payloads(shapes)
 
 # ====================== Optional: Serper helpers ======================
@@ -177,7 +172,6 @@ def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     )
     txt = _respond(instr, prompt, effort="medium", verbosity="low", max_tokens=1200)
     if not _not_empty(txt):
-        # Provide a clear placeholder—UI won’t look “blank”
         return "⚠️ Market Analysis: no content generated."
     return txt
 
