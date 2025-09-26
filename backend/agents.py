@@ -2,13 +2,16 @@ import os
 from typing import Optional, Dict, Any
 from openai import OpenAI
 
-# ===== Model & behavior knobs (can be set via Streamlit secrets) =====
+# ===== Model & behavior knobs (override via Streamlit secrets) =====
 MODEL_ALL      = os.getenv("MODEL_ALL",      os.getenv("model_all", "gpt-5"))
 VERBOSITY_ALL  = os.getenv("VERBOSITY",      os.getenv("verbosity", "low"))
-ENABLE_WEB     = os.getenv("ENABLE_WEB_SEARCH", "0") == "1"   # optional Responses web_search tool
+
+# Serper toggle (cheaper search)
+USE_SERPER     = os.getenv("USE_SERPER", "0") == "1"
+# Ensure ENABLE_WEB_SEARCH is ignored here (we won't use OpenAI web tool)
+# ENABLE_WEB     = os.getenv("ENABLE_WEB_SEARCH", "0") == "1"
 
 _client: Optional[OpenAI] = None
-
 def get_client() -> OpenAI:
     global _client
     if _client is None:
@@ -18,7 +21,7 @@ def get_client() -> OpenAI:
         _client = OpenAI(api_key=api_key)
     return _client
 
-def _responses_create(**kwargs) -> Any:
+def _responses_create(**kwargs):
     return get_client().responses.create(**kwargs)
 
 def _respond(
@@ -29,15 +32,9 @@ def _respond(
     effort: Optional[str] = "medium",
     verbosity: Optional[str] = VERBOSITY_ALL,
     max_tokens: int = 1000,
-    use_web_search: bool = False
 ) -> str:
     """
-    Responses API wrapper with:
-      - instructions + input
-      - reasoning.effort
-      - text.verbosity (for GPT-5)
-      - optional web_search tool (if ENABLE_WEB_SEARCH=1 and your key supports it)
-      - stateless (store=False)
+    Responses API helper (no OpenAI web tool).
     """
     payload: Dict[str, Any] = {
         "model": model,
@@ -51,18 +48,23 @@ def _respond(
     if verbosity:
         payload["text"] = {"verbosity": verbosity}
 
-    # Try with web_search tool if requested (and fall back if unsupported)
-    if use_web_search:
-        try:
-            with_tool = dict(payload)
-            with_tool["tools"] = [{"type": "web_search"}]  # or web_search_preview
-            r = _responses_create(**with_tool)
-            return (r.output_text or "").strip()
-        except Exception:
-            pass  # fall back to plain call
-
     r = _responses_create(**payload)
     return (r.output_text or "").strip()
+
+# ====================== Optional: Serper helpers ======================
+def _format_serper_block(results: list[dict], label: str = "Search Findings") -> str:
+    """
+    Compact block to append to prompts so the model can ground numbers.
+    """
+    if not results:
+        return ""
+    lines = [f"{label} (top results):"]
+    for i, it in enumerate(results, 1):
+        title = it.get("title") or ""
+        link = it.get("link") or ""
+        snippet = it.get("snippet") or ""
+        lines.append(f"{i}. {title}\n   {snippet}\n   {link}")
+    return "\n".join(lines)
 
 # ======================= Agents (all return str) =======================
 
@@ -76,35 +78,51 @@ def planner_agent(idea: str) -> str:
 
 def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     """
-    Region-aware, compact, and structured.
+    Region-aware, compact, structured. Uses Serper (if enabled) to ground assumptions.
     Guarantees a final single line: TAM: <X>, SAM: <Y>, SOM: <Z> (with units).
     """
+    serper_block = ""
+    if USE_SERPER:
+        try:
+            from backend.serper import web_search_serper
+            # You can tune this query pattern freely
+            q = f"{region} padel market size participation rate average court price"
+            results = web_search_serper(q, num=5)
+            serper_block = _format_serper_block(results, label="External Signals")
+        except Exception as _:
+            serper_block = ""  # fail safe
+
     instr = (
         "You are a market sizing analyst. Using the target region and reasonable public assumptions, "
         "estimate TAM, SAM, and SOM for the proposed business. Keep output compact, with:\n"
-        "1) A 2–4 sentence method & assumptions (participation rates, price, capacity, etc.)\n"
+        "1) A 2–4 sentence method & assumptions (participation rates, price, capacity, etc.). If you used external signals, mention them.\n"
         "2) A 3-row Markdown table with columns: Segment | Units | Value\n"
         "3) A FINAL single line strictly formatted as: TAM: <X>, SAM: <Y>, SOM: <Z> (include units)\n"
-        "If the region is Pakistan, default currency to PKR; if you must convert, state the FX briefly in the method."
+        "If the region is Pakistan, default currency to PKR; if converting, state FX briefly in the method."
     )
     prompt = (
         f"Business Idea:\n{idea}\n\n"
         f"Target Region: {region}\n\n"
-        "Provide a brief market overview and compute TAM/SAM/SOM as instructed."
+        f"{serper_block}\n\n"
+        "Provide a concise market overview and compute TAM/SAM/SOM exactly as instructed."
     )
-    # Give a bit more budget but keep verbosity low so it stays compact.
-    return _respond(
-        instr, prompt,
-        effort="medium", verbosity="low", max_tokens=1200,
-        use_web_search=ENABLE_WEB
-    )
+    return _respond(instr, prompt, effort="medium", verbosity="low", max_tokens=1200)
 
 def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
+    serper_block = ""
+    if USE_SERPER:
+        try:
+            from backend.serper import web_search_serper
+            q = f"{region} padel clubs competitors booking platforms"
+            serper_block = _format_serper_block(web_search_serper(q, num=5), label="External Signals")
+        except Exception:
+            serper_block = ""
+
     instr = (
         "You are a competition analyst. Identify 3–6 key competitors/alternatives in the target region, "
         "compare positioning briefly, and summarize opportunities to differentiate."
     )
-    prompt = f"Business Idea:\n{idea}\nTarget Region: {region}\n\nAnalyze the competitive landscape."
+    prompt = f"Business Idea:\n{idea}\nTarget Region: {region}\n\n{serper_block}\n\nAnalyze the competitive landscape."
     return _respond(instr, prompt, effort="medium", verbosity="low", max_tokens=900)
 
 def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
