@@ -11,22 +11,20 @@ def generate_analysis_pdf(
     def h(txt): pdf.set_font("Arial", "B", 14); pdf.cell(0, 9, txt, ln=1)
     def p(txt): pdf.set_font("Arial", "", 12); pdf.multi_cell(0, 6, txt); pdf.ln(2)
 
-    pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "Business Idea Analysis Report", ln=1)
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Business Idea Analysis Report", ln=1)
     pdf.ln(2)
 
     h("Business Idea");           p(idea)
-    if plan:
-        h("Analysis Plan");       p(plan)
+    if plan: h("Analysis Plan");  p(plan)
     h("Market Analysis");         p(market)
     h("Competition Analysis");    p(competition)
     h("Financial Feasibility");   p(financial)
     h("Go-to-Market Strategy");   p(gtm)
     h("Risks Analysis");          p(risks)
-    if critic:
-        h("Critique");           p(critic)
+    if critic: h("Critique");     p(critic)
     h("Final Synthesis Report");  p(final_report)
 
-    # (Removed visualizations per requirements.)
     try:
         return pdf.output(dest="S").encode("latin-1")
     except Exception:
