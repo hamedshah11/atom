@@ -3,7 +3,8 @@ from pathlib import Path
 import streamlit as st
 
 st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
-
+os.environ["SERPER_API_KEY"] = "e62e1e8919e57b754e3acd05b2d2bb570effb93e"
+os.environ["USE_SERPER"] = "1"
 # ---- Secrets → env BEFORE imports that use them ----
 if "openai_api_key" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
