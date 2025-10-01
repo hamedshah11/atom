@@ -4,21 +4,21 @@ import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 from langsmith import traceable
-from langsmith.run_helpers import trace
 
-# ===== Model & behavior knobs =====
-MODEL_ALL = os.getenv("MODEL_ALL", "gpt-3.5-turbo")
+# ===== Model Configuration =====
+MODEL_ALL = os.getenv("MODEL_ALL", "gpt-4o-mini")
 VERBOSITY_ALL = os.getenv("VERBOSITY", "low")
 USE_SERPER = os.getenv("USE_SERPER", "0") == "1"
 DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
 
-# Rate limiting - crucial for avoiding errors
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "2.0"))
+# Rate limiting
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "1.0"))
 
 # LangSmith configuration
 LANGCHAIN_TRACING = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 
 _client: Optional[OpenAI] = None
+
 def get_client() -> OpenAI:
     global _client
     if _client is None:
@@ -33,10 +33,13 @@ def _debug_log(message: str):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
 
+def _is_o1_model(model: str) -> bool:
+    """Check if model is an o1 reasoning model"""
+    return model.startswith("o1-")
+
 @traceable(name="openai_chat_completion")
 def _chat_completion(**kwargs) -> Any:
     """Use OpenAI chat completions API with rate limiting and LangSmith tracing"""
-    # IMPORTANT: Add delay to prevent rate limit errors
     time.sleep(RATE_LIMIT_DELAY)
     
     try:
@@ -65,31 +68,44 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    Simple, robust OpenAI Chat API helper with LangSmith tracing
+    Robust OpenAI Chat API helper with support for modern models including o1
     """
-    # Build system prompt
-    system_content = instructions
-    if verbosity == "low":
-        system_content += "\n\nBe concise and direct."
+    is_o1 = _is_o1_model(model)
     
-    # Build messages
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": prompt}
-    ]
-    
-    # Temperature based on effort
-    temperature_map = {"minimal": 0.3, "low": 0.5, "medium": 0.7, "high": 0.9}
-    temperature = temperature_map.get(effort, 0.7)
+    # For o1 models: combine instructions and prompt into user message
+    # o1 models don't support system messages or temperature
+    if is_o1:
+        combined_prompt = f"{instructions}\n\n{prompt}"
+        messages = [{"role": "user", "content": combined_prompt}]
+        api_params = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+    else:
+        # Standard models: use system message
+        system_content = instructions
+        if verbosity == "low":
+            system_content += "\n\nBe concise and direct."
+        
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt}
+        ]
+        
+        # Temperature based on effort
+        temperature_map = {"minimal": 0.3, "low": 0.5, "medium": 0.7, "high": 0.9}
+        temperature = temperature_map.get(effort, 0.7)
+        
+        api_params = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature
+        }
     
     try:
-        response = _chat_completion(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        
+        response = _chat_completion(**api_params)
         text = _safe_output_text(response)
         
         if text:
@@ -100,9 +116,9 @@ def _respond(
     except Exception as e:
         error_msg = str(e)
         if "rate limit" in error_msg.lower():
-            return "⚠️ Rate limit hit. Please wait a moment and try again with fewer requests."
-        elif "model" in error_msg.lower():
-            return f"⚠️ Model '{model}' not available. Please use gpt-3.5-turbo or gpt-4-turbo."
+            return "⚠️ Rate limit hit. Please wait a moment and try again."
+        elif "model" in error_msg.lower() or "does not exist" in error_msg.lower():
+            return f"⚠️ Model '{model}' not available. Try: gpt-4o, gpt-4o-mini, o1-preview, or o1-mini."
         else:
             return f"⚠️ API Error: {error_msg[:200]}"
 
@@ -111,7 +127,7 @@ def _format_serper_block(results: list[dict], label: str = "Market Research") ->
     if not results:
         return ""
     lines = [f"\n{label}:"]
-    for i, it in enumerate(results[:3], 1):  # Limit to 3 results
+    for i, it in enumerate(results[:3], 1):
         title = it.get("title", "")[:100]
         snippet = it.get("snippet", "")[:200]
         lines.append(f"{i}. {title}\n   {snippet}")
@@ -202,7 +218,6 @@ def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str, region
         "3. Next Steps (3-5 actions)\n"
         "Use markdown formatting."
     )
-    # Keep it concise to avoid token limits
     analyses_summary = "\n".join([f"{k}: {v[:150]}..." for k, v in analyses.items()])
     prompt = (
         f"Business: {idea}\nRegion: {region}\n\n"
