@@ -3,10 +3,10 @@ import json
 import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
+from langsmith import traceable
+from langsmith.run_helpers import trace
 
 # ===== Model & behavior knobs =====
-# Use gpt-3.5-turbo as default - it's reliable and cheaper
-# Note: There is NO gpt-5-mini model yet!
 MODEL_ALL = os.getenv("MODEL_ALL", "gpt-3.5-turbo")
 VERBOSITY_ALL = os.getenv("VERBOSITY", "low")
 USE_SERPER = os.getenv("USE_SERPER", "0") == "1"
@@ -14,6 +14,9 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
 
 # Rate limiting - crucial for avoiding errors
 RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "2.0"))
+
+# LangSmith configuration
+LANGCHAIN_TRACING = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 
 _client: Optional[OpenAI] = None
 def get_client() -> OpenAI:
@@ -30,8 +33,9 @@ def _debug_log(message: str):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
 
+@traceable(name="openai_chat_completion")
 def _chat_completion(**kwargs) -> Any:
-    """Use OpenAI chat completions API with rate limiting"""
+    """Use OpenAI chat completions API with rate limiting and LangSmith tracing"""
     # IMPORTANT: Add delay to prevent rate limit errors
     time.sleep(RATE_LIMIT_DELAY)
     
@@ -50,6 +54,7 @@ def _safe_output_text(resp: Any) -> str:
             return content.strip() if content else ""
     return ""
 
+@traceable(name="llm_respond")
 def _respond(
     instructions: str,
     prompt: str,
@@ -60,7 +65,7 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    Simple, robust OpenAI Chat API helper
+    Simple, robust OpenAI Chat API helper with LangSmith tracing
     """
     # Build system prompt
     system_content = instructions
@@ -114,6 +119,7 @@ def _format_serper_block(results: list[dict], label: str = "Market Research") ->
 
 # ======================= Agents =======================
 
+@traceable(name="planner_agent")
 def planner_agent(idea: str) -> str:
     instr = (
         "You are a planning agent. Create 4-6 concise steps to analyze this business idea. "
@@ -122,6 +128,7 @@ def planner_agent(idea: str) -> str:
     prompt = f"Business Idea: {idea}\n\nCreate a brief analysis plan."
     return _respond(instr, prompt, effort="minimal", max_tokens=400)
 
+@traceable(name="market_analysis_agent")
 def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     serper_block = ""
     if USE_SERPER:
@@ -140,6 +147,7 @@ def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     prompt = f"Business: {idea}\nRegion: {region}{serper_block}\n\nProvide market analysis."
     return _respond(instr, prompt, max_tokens=800)
 
+@traceable(name="competition_analysis_agent")
 def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     serper_block = ""
     if USE_SERPER:
@@ -154,6 +162,7 @@ def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     prompt = f"Business: {idea}\nRegion: {region}{serper_block}\n\nAnalyze competition."
     return _respond(instr, prompt, max_tokens=700)
 
+@traceable(name="financial_feasibility_agent")
 def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
     instr = (
         "You are a finance analyst. Outline: revenue model, pricing, key costs, margins, "
@@ -162,6 +171,7 @@ def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
     prompt = f"Business: {idea}\nRegion: {region}\n\nProvide financial analysis."
     return _respond(instr, prompt, max_tokens=800)
 
+@traceable(name="gtm_strategy_agent")
 def gtm_strategy_agent(idea: str, region: str = "Pakistan") -> str:
     instr = (
         "You are a GTM strategist. Define: target customers, marketing channels, "
@@ -170,17 +180,20 @@ def gtm_strategy_agent(idea: str, region: str = "Pakistan") -> str:
     prompt = f"Business: {idea}\nRegion: {region}\n\nCreate GTM strategy."
     return _respond(instr, prompt, max_tokens=700)
 
+@traceable(name="risks_analysis_agent")
 def risks_analysis_agent(idea: str, region: str = "Pakistan") -> str:
     instr = "You are a risk analyst. List 5 major risks (regulatory, market, operational, financial, competitive) with impact level and mitigation."
     prompt = f"Business: {idea}\nRegion: {region}\n\nIdentify key risks."
     return _respond(instr, prompt, max_tokens=600)
 
+@traceable(name="critic_agent")
 def critic_agent(idea: str, analyses: Dict[str, str], region: str = "Pakistan") -> str:
     instr = "You are a business critic. Review the analyses and identify 3-5 major gaps, contradictions, or concerns."
     analyses_summary = "\n".join([f"{k}: {v[:200]}..." for k, v in analyses.items()])
     prompt = f"Business: {idea}\nRegion: {region}\n\nAnalyses:\n{analyses_summary}\n\nProvide critical review."
     return _respond(instr, prompt, max_tokens=600)
 
+@traceable(name="synthesizer_agent")
 def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str, region: str = "Pakistan") -> str:
     instr = (
         "You are a management consultant. Create a final report with:\n"
