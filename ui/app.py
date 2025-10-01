@@ -1,10 +1,14 @@
 import os, sys
 from pathlib import Path
 import streamlit as st
+from langsmith import Client
 
 st.set_page_config(page_title="Business Idea Analyzer", page_icon="📊", layout="wide")
+
+# Configure Serper
 os.environ["SERPER_API_KEY"] = "e62e1e8919e57b754e3acd05b2d2bb570effb93e"
 os.environ["USE_SERPER"] = "1"
+
 # ---- Secrets → env BEFORE imports that use them ----
 if "openai_api_key" in st.secrets:
     os.environ["OPENAI_API_KEY"] = st.secrets["openai_api_key"]
@@ -17,6 +21,13 @@ if "USE_SERPER" in st.secrets:
 if "SERPER_API_KEY" in st.secrets:
     os.environ["SERPER_API_KEY"] = st.secrets["SERPER_API_KEY"]
 
+# LangSmith configuration from secrets or environment
+if "langchain_api_key" in st.secrets:
+    os.environ["LANGCHAIN_API_KEY"] = st.secrets["langchain_api_key"]
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+if "langchain_project" in st.secrets:
+    os.environ["LANGCHAIN_PROJECT"] = st.secrets["langchain_project"]
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -27,17 +38,56 @@ from utils.pdf import generate_analysis_pdf
 st.title("Business Idea Analyzer — GPT-4 Turbo")
 st.caption("Planner → Market → Competition → Financials → GTM → Risks → Critic → Synthesizer")
 
-# Show current model
-model_name = os.getenv("MODEL_ALL", "gpt-4-turbo")
-st.info(f"Using model: {model_name}")
+# Check if LangSmith is enabled
+langsmith_enabled = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
+langsmith_project = os.getenv("LANGCHAIN_PROJECT", "business-idea-analyzer")
 
-if not os.getenv("OPENAI_API_KEY"):
-    with st.expander("🔑 Configure OpenAI API key"):
-        key = st.text_input("OpenAI API Key", type="password")
+# Show current model and LangSmith status
+col1, col2 = st.columns([2, 1])
+with col1:
+    model_name = os.getenv("MODEL_ALL", "gpt-4-turbo")
+    st.info(f"🤖 Using model: {model_name}")
+with col2:
+    if langsmith_enabled:
+        st.success(f"🔍 LangSmith: Enabled")
+        if os.getenv("LANGCHAIN_API_KEY"):
+            st.caption(f"Project: {langsmith_project}")
+    else:
+        st.warning("🔍 LangSmith: Disabled")
+
+# Configuration section
+with st.expander("⚙️ Configuration", expanded=False):
+    if not os.getenv("OPENAI_API_KEY"):
+        key = st.text_input("OpenAI API Key", type="password", key="openai_key")
         if key:
             os.environ["OPENAI_API_KEY"] = key
-            st.success("API key set for this session.")
+            st.success("✅ API key set for this session.")
+    else:
+        st.success("✅ OpenAI API key configured")
+    
+    # LangSmith setup
+    st.subheader("LangSmith Observability")
+    if not langsmith_enabled:
+        st.info("Enable LangSmith to track and debug your agent executions.")
+        langsmith_key = st.text_input("LangSmith API Key (optional)", type="password", key="langsmith_key")
+        langsmith_proj = st.text_input("Project Name", value="business-idea-analyzer", key="langsmith_proj")
+        
+        if st.button("Enable LangSmith"):
+            if langsmith_key:
+                os.environ["LANGCHAIN_API_KEY"] = langsmith_key
+                os.environ["LANGCHAIN_TRACING_V2"] = "true"
+                os.environ["LANGCHAIN_PROJECT"] = langsmith_proj
+                st.rerun()
+            else:
+                st.error("Please provide a LangSmith API key")
+    else:
+        st.success("✅ LangSmith tracing enabled")
+        st.caption(f"View traces at: https://smith.langchain.com/o/projects/p/{langsmith_project}")
+        if st.button("Disable LangSmith"):
+            os.environ["LANGCHAIN_TRACING_V2"] = "false"
+            st.rerun()
 
+# Main input
 idea = st.text_area("Your business idea", height=140, placeholder="Describe your idea...")
 region = st.text_input("Target region / market", value="Pakistan")
 
@@ -51,6 +101,9 @@ if run:
     if not os.getenv("OPENAI_API_KEY"):
         st.error("Please configure your OpenAI API key first.")
         st.stop()
+    
+    # Store run ID for LangSmith tracking
+    run_id = None
     
     try:
         # Create progress bar
@@ -142,27 +195,33 @@ if run:
         # Clear status and show completion
         status_text.text("✅ Analysis complete!")
         
-        # Generate PDF
+        # Generate PDF with better error handling
         with st.spinner("Generating PDF report..."):
-            pdf_bytes = generate_analysis_pdf(
-                idea=idea, 
-                plan=plan, 
-                market=market, 
-                competition=competition,
-                financial=financial, 
-                gtm=gtm, 
-                risks=risks, 
-                critic=critic, 
-                final_report=final_md
-            )
-        
-        if pdf_bytes:
-            st.download_button(
-                "Download Analysis (PDF)", 
-                data=pdf_bytes,
-                file_name="business_idea_analysis.pdf", 
-                mime="application/pdf"
-            )
+            try:
+                pdf_bytes = generate_analysis_pdf(
+                    idea=idea, 
+                    plan=plan, 
+                    market=market, 
+                    competition=competition,
+                    financial=financial, 
+                    gtm=gtm, 
+                    risks=risks, 
+                    critic=critic, 
+                    final_report=final_md
+                )
+                
+                if pdf_bytes:
+                    st.download_button(
+                        "📄 Download Analysis (PDF)", 
+                        data=pdf_bytes,
+                        file_name="business_idea_analysis.pdf", 
+                        mime="application/pdf"
+                    )
+                else:
+                    st.warning("⚠️ PDF generation encountered an issue. You can copy the analysis from above.")
+            except Exception as pdf_error:
+                st.warning(f"⚠️ PDF generation failed: {str(pdf_error)[:100]}")
+                st.info("You can still copy the analysis from the sections above.")
         
         # Show summary stats
         st.success("✅ Analysis completed successfully!")
@@ -173,9 +232,18 @@ if run:
             st.metric("Target Region", region)
         with col3:
             st.metric("Report Sections", "8")
+        
+        # LangSmith trace link if enabled
+        if langsmith_enabled and os.getenv("LANGCHAIN_API_KEY"):
+            st.divider()
+            st.info(f"🔍 View detailed execution traces in [LangSmith](https://smith.langchain.com/o/projects/p/{langsmith_project})")
 
     except Exception as e:
         st.error(f"❌ Error during analysis: {str(e)}")
         st.error(f"Details: {repr(e)}")
         st.info("Common issues:\n- Invalid API key\n- Rate limits exceeded\n- Network issues\n- Model not available")
+        
+        # Show trace link even on error if LangSmith is enabled
+        if langsmith_enabled:
+            st.info(f"Check [LangSmith traces](https://smith.langchain.com/o/projects/p/{langsmith_project}) for detailed error information")
         st.stop()
