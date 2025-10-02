@@ -33,9 +33,10 @@ def _debug_log(message: str):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
 
-def _is_o1_model(model: str) -> bool:
-    """Check if model is an o1 reasoning model"""
-    return model.startswith("o1-")
+def _is_o_series_model(model: str) -> bool:
+    """Check if model is an o-series reasoning model (o1, o3-mini, etc.)"""
+    # o-series models: o1, o3-mini, o1-preview (legacy), o1-mini (legacy)
+    return model.startswith(("o1", "o3", "o4"))
 
 @traceable(name="openai_chat_completion")
 def _chat_completion(**kwargs) -> Any:
@@ -68,22 +69,34 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    Robust OpenAI Chat API helper with support for modern models including o1
+    Robust OpenAI Chat API helper supporting:
+    - GPT-4o series (gpt-4o, gpt-4o-mini)
+    - O-series reasoning models (o1, o3-mini)
     """
-    is_o1 = _is_o1_model(model)
+    is_o_series = _is_o_series_model(model)
     
-    # For o1 models: combine instructions and prompt into user message
-    # o1 models don't support system messages or temperature
-    if is_o1:
+    # O-series models (o1, o3-mini) have special requirements
+    if is_o_series:
+        # Combine instructions and prompt - o-series don't use system messages
         combined_prompt = f"{instructions}\n\n{prompt}"
         messages = [{"role": "user", "content": combined_prompt}]
+        
+        # O-series specific parameters
         api_params = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
+            # No temperature for o-series
         }
+        
+        # o3-mini supports reasoning_effort
+        if model == "o3-mini":
+            # Map effort to reasoning_effort: low/medium/high
+            reasoning_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
+            api_params["reasoning_effort"] = reasoning_map.get(effort, "medium")
+    
     else:
-        # Standard models: use system message
+        # Standard GPT-4o models: use system message
         system_content = instructions
         if verbosity == "low":
             system_content += "\n\nBe concise and direct."
@@ -118,7 +131,9 @@ def _respond(
         if "rate limit" in error_msg.lower():
             return "⚠️ Rate limit hit. Please wait a moment and try again."
         elif "model" in error_msg.lower() or "does not exist" in error_msg.lower():
-            return f"⚠️ Model '{model}' not available. Try: gpt-4o, gpt-4o-mini, o1-preview, or o1-mini."
+            return f"⚠️ Model '{model}' not available. Available: gpt-4o, gpt-4o-mini, o1, o3-mini"
+        elif "insufficient_quota" in error_msg.lower() or "tier" in error_msg.lower():
+            return f"⚠️ Tier restriction: o-series models (o1, o3-mini) require API Tier 1+ ($5 spend)"
         else:
             return f"⚠️ API Error: {error_msg[:200]}"
 
