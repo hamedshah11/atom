@@ -16,7 +16,7 @@ if "model_all" in st.secrets:
 if "verbosity" in st.secrets:
     os.environ["VERBOSITY"] = st.secrets["verbosity"]
 
-# LangSmith configuration - FIXED
+# LangSmith configuration
 if "langchain_api_key" in st.secrets:
     os.environ["LANGCHAIN_API_KEY"] = st.secrets["langchain_api_key"]
     os.environ["LANGCHAIN_TRACING_V2"] = st.secrets.get("langchain_tracing_v2", "true")
@@ -48,16 +48,20 @@ with col1:
     model_emoji = {
         "gpt-4o": "🌟",
         "gpt-4o-mini": "⚡",
-        "o1-preview": "🧠",
-        "o1-mini": "🤔",
-        "gpt-4-turbo": "⚠️",
-        "gpt-3.5-turbo": "📦"
+        "o1": "🧠",
+        "o3-mini": "🤔",
+        "o1-preview": "⚠️",  # Legacy
+        "o1-mini": "⚠️",     # Legacy
+        "gpt-4-turbo": "❌",
+        "gpt-3.5-turbo": "❌"
     }
     emoji = model_emoji.get(model_all, "🤖")
     st.info(f"{emoji} Model: {model_all}")
     
     if model_all in ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]:
-        st.warning("⚠️ Consider upgrading to gpt-4o-mini or gpt-4o!")
+        st.error("❌ This model is deprecated! Use gpt-4o or gpt-4o-mini")
+    elif model_all in ["o1-preview", "o1-mini"]:
+        st.warning("⚠️ Legacy model! Use o1 or o3-mini instead")
 
 with col2:
     if langsmith_enabled:
@@ -87,12 +91,12 @@ with st.sidebar:
                 from langsmith import Client
                 api_key = os.getenv("LANGCHAIN_API_KEY")
                 if not api_key:
-                    st.error("❌ No API key in environment!")
+                    st.error("❌ No API key!")
                 else:
                     with st.spinner("Testing..."):
                         client = Client(api_key=api_key)
                         projects = list(client.list_projects(limit=3))
-                        st.success(f"✅ Connected! Found {len(projects)} projects")
+                        st.success(f"✅ Connected! {len(projects)} projects")
                         for p in projects:
                             st.write(f"- {p.name}")
             except Exception as e:
@@ -112,38 +116,84 @@ with st.expander("⚙️ Configuration", expanded=False):
             st.success("✅ OpenAI configured")
     
     with tab2:
-        st.subheader("Model Selection")
-        st.info("💡 **Recommended:**\n"
-                "- **gpt-4o-mini** ⚡: Best value\n"
-                "- **gpt-4o** 🌟: Best quality\n"
-                "- **o1-preview** 🧠: Best reasoning")
+        st.subheader("🤖 Model Selection")
         
-        selected = st.selectbox(
-            "Choose Model",
-            ["gpt-4o-mini (Recommended)", "gpt-4o", "o1-preview", "o1-mini"],
-            index=0
-        )
+        # Model info with updated details
+        st.write("**Available Models (October 2025):**")
         
-        model_map = {
-            "gpt-4o-mini (Recommended)": "gpt-4o-mini",
-            "gpt-4o": "gpt-4o",
-            "o1-preview": "o1-preview",
-            "o1-mini": "o1-mini"
+        models_info = {
+            "gpt-4o-mini": {
+                "emoji": "⚡", 
+                "cost": "$0.02", 
+                "speed": "★★★★★", 
+                "quality": "★★★★☆", 
+                "desc": "Best value",
+                "note": "Recommended for daily use"
+            },
+            "gpt-4o": {
+                "emoji": "🌟", 
+                "cost": "$0.08", 
+                "speed": "★★★★☆", 
+                "quality": "★★★★★", 
+                "desc": "Best quality",
+                "note": "Premium performance"
+            },
+            "o1": {
+                "emoji": "🧠", 
+                "cost": "$0.50", 
+                "speed": "★★☆☆☆", 
+                "quality": "★★★★★", 
+                "desc": "Advanced reasoning",
+                "note": "Requires API Tier 1+ ($5 spend)"
+            },
+            "o3-mini": {
+                "emoji": "🤔", 
+                "cost": "$0.15", 
+                "speed": "★★★☆☆", 
+                "quality": "★★★★☆", 
+                "desc": "Efficient reasoning",
+                "note": "Requires API Tier 1+ ($5 spend)"
+            }
         }
         
-        if st.button("Apply Model"):
-            os.environ["MODEL_ALL"] = model_map[selected]
-            st.success(f"✅ Using {model_map[selected]}")
-            st.rerun()
+        # Current model status
+        current_model = os.getenv("MODEL_ALL", "gpt-4o-mini")
+        if current_model in models_info:
+            current_info = models_info[current_model]
+            st.success(f"**Active:** {current_info['emoji']} {current_model} — {current_info['cost']}/analysis")
+        else:
+            st.warning(f"⚠️ Active: {current_model} (legacy/unknown)")
         
         st.divider()
-        cost_map = {
-            "gpt-4o-mini": "$0.02",
-            "gpt-4o": "$0.08",
-            "o1-mini": "$0.15",
-            "o1-preview": "$0.50"
-        }
-        st.metric("Cost/Analysis", cost_map.get(model_all, "$0.05"))
+        
+        # Model selection cards
+        cols = st.columns(2)
+        
+        for idx, (model, info) in enumerate(models_info.items()):
+            with cols[idx % 2]:
+                with st.container(border=True):
+                    st.write(f"### {info['emoji']} {model}")
+                    st.write(f"**{info['desc']}**")
+                    st.write(f"💰 **{info['cost']}**/analysis")
+                    st.write(f"⚡ Speed: {info['speed']}")
+                    st.write(f"✨ Quality: {info['quality']}")
+                    st.caption(f"ℹ️ {info['note']}")
+                    
+                    if st.button(f"Use {model}", key=f"select_{model}", 
+                               disabled=(model == current_model),
+                               use_container_width=True):
+                        os.environ["MODEL_ALL"] = model
+                        st.rerun()
+        
+        st.divider()
+        
+        # Legacy models warning
+        with st.expander("⚠️ Legacy Models (Not Recommended)", expanded=False):
+            st.warning("**These models have been replaced:**\n"
+                      "- ❌ o1-preview → Use **o1** instead\n"
+                      "- ❌ o1-mini → Use **o3-mini** instead\n"
+                      "- ❌ gpt-4-turbo → Use **gpt-4o** instead\n"
+                      "- ❌ gpt-3.5-turbo → Use **gpt-4o-mini** instead")
     
     with tab3:
         st.subheader("LangSmith Observability")
@@ -303,7 +353,7 @@ if run:
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-        st.info("Check:\n- API key valid\n- Rate limits\n- Network")
+        st.info("Check:\n- API key valid\n- Rate limits\n- Network\n- API tier for o-series models")
         
         if langsmith_enabled:
             st.info("[Check LangSmith](https://smith.langchain.com/) for details")
