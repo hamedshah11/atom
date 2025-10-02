@@ -40,7 +40,9 @@ st.caption("Planner → Market → Competition → Financials → GTM → Risks 
 # Check configurations
 langsmith_enabled = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 langsmith_project = os.getenv("LANGCHAIN_PROJECT", "business-idea-analyzer")
-model_all = os.getenv("MODEL_ALL", "gpt-4o-mini")
+
+# Get current model dynamically
+current_model = os.getenv("MODEL_ALL", "gpt-4o-mini")
 
 # Status bar
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -50,18 +52,18 @@ with col1:
         "gpt-4o-mini": "⚡",
         "o1": "🧠",
         "o3-mini": "🤔",
-        "o1-preview": "⚠️",  # Legacy
-        "o1-mini": "⚠️",     # Legacy
+        "o1-preview": "⚠️",
+        "o1-mini": "⚠️",
         "gpt-4-turbo": "❌",
         "gpt-3.5-turbo": "❌"
     }
-    emoji = model_emoji.get(model_all, "🤖")
-    st.info(f"{emoji} Model: {model_all}")
+    emoji = model_emoji.get(current_model, "🤖")
+    st.info(f"{emoji} Active Model: **{current_model}**")
     
-    if model_all in ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]:
-        st.error("❌ This model is deprecated! Use gpt-4o or gpt-4o-mini")
-    elif model_all in ["o1-preview", "o1-mini"]:
-        st.warning("⚠️ Legacy model! Use o1 or o3-mini instead")
+    if current_model in ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]:
+        st.error("❌ This model is deprecated!")
+    elif current_model in ["o1-preview", "o1-mini"]:
+        st.warning("⚠️ Legacy model!")
 
 with col2:
     if langsmith_enabled:
@@ -74,15 +76,19 @@ with col3:
 
 # Debug sidebar
 with st.sidebar:
+    # Show which model is ACTUALLY being used
+    st.info(f"**🎯 Current Model:**\n{current_model}")
+    
     with st.expander("🐛 Debug Info", expanded=False):
-        st.write("**LangSmith Status:**")
+        st.write("**Environment:**")
+        st.write(f"MODEL_ALL: {os.getenv('MODEL_ALL', 'not set')}")
+        st.write(f"API Key: {'✅ Set' if os.getenv('OPENAI_API_KEY') else '❌ Missing'}")
+        
+        st.divider()
+        st.write("**LangSmith:**")
         st.write(f"API Key: {'✅ Set' if os.getenv('LANGCHAIN_API_KEY') else '❌ Missing'}")
-        if os.getenv('LANGCHAIN_API_KEY'):
-            key = os.getenv('LANGCHAIN_API_KEY')
-            st.write(f"Prefix: {key[:10]}...")
         st.write(f"Tracing: {os.getenv('LANGCHAIN_TRACING_V2')}")
         st.write(f"Project: {os.getenv('LANGCHAIN_PROJECT')}")
-        st.write(f"Endpoint: {os.getenv('LANGCHAIN_ENDPOINT')}")
         
         st.divider()
         
@@ -97,8 +103,6 @@ with st.sidebar:
                         client = Client(api_key=api_key)
                         projects = list(client.list_projects(limit=3))
                         st.success(f"✅ Connected! {len(projects)} projects")
-                        for p in projects:
-                            st.write(f"- {p.name}")
             except Exception as e:
                 st.error(f"❌ Failed: {str(e)[:100]}")
 
@@ -118,9 +122,7 @@ with st.expander("⚙️ Configuration", expanded=False):
     with tab2:
         st.subheader("🤖 Model Selection")
         
-        # Model info with updated details
-        st.write("**Available Models (October 2025):**")
-        
+        # Model info
         models_info = {
             "gpt-4o-mini": {
                 "emoji": "⚡", 
@@ -128,7 +130,7 @@ with st.expander("⚙️ Configuration", expanded=False):
                 "speed": "★★★★★", 
                 "quality": "★★★★☆", 
                 "desc": "Best value",
-                "note": "Recommended for daily use"
+                "note": "No tier requirement"
             },
             "gpt-4o": {
                 "emoji": "🌟", 
@@ -136,7 +138,7 @@ with st.expander("⚙️ Configuration", expanded=False):
                 "speed": "★★★★☆", 
                 "quality": "★★★★★", 
                 "desc": "Best quality",
-                "note": "Premium performance"
+                "note": "No tier requirement"
             },
             "o1": {
                 "emoji": "🧠", 
@@ -144,7 +146,7 @@ with st.expander("⚙️ Configuration", expanded=False):
                 "speed": "★★☆☆☆", 
                 "quality": "★★★★★", 
                 "desc": "Advanced reasoning",
-                "note": "Requires API Tier 1+ ($5 spend)"
+                "note": "⚠️ Requires API Tier 1+ ($5 spend)"
             },
             "o3-mini": {
                 "emoji": "🤔", 
@@ -152,17 +154,16 @@ with st.expander("⚙️ Configuration", expanded=False):
                 "speed": "★★★☆☆", 
                 "quality": "★★★★☆", 
                 "desc": "Efficient reasoning",
-                "note": "Requires API Tier 1+ ($5 spend)"
+                "note": "⚠️ Requires API Tier 1+ ($5 spend)"
             }
         }
         
-        # Current model status
-        current_model = os.getenv("MODEL_ALL", "gpt-4o-mini")
+        # Show currently ACTIVE model
         if current_model in models_info:
             current_info = models_info[current_model]
-            st.success(f"**Active:** {current_info['emoji']} {current_model} — {current_info['cost']}/analysis")
+            st.success(f"**🎯 Active Model:** {current_info['emoji']} **{current_model}** — {current_info['cost']}/analysis")
         else:
-            st.warning(f"⚠️ Active: {current_model} (legacy/unknown)")
+            st.warning(f"⚠️ Active: {current_model} (unknown)")
         
         st.divider()
         
@@ -177,44 +178,43 @@ with st.expander("⚙️ Configuration", expanded=False):
                     st.write(f"💰 **{info['cost']}**/analysis")
                     st.write(f"⚡ Speed: {info['speed']}")
                     st.write(f"✨ Quality: {info['quality']}")
-                    st.caption(f"ℹ️ {info['note']}")
+                    st.caption(f"{info['note']}")
                     
                     if st.button(f"Use {model}", key=f"select_{model}", 
                                disabled=(model == current_model),
                                use_container_width=True):
                         os.environ["MODEL_ALL"] = model
+                        st.success(f"✅ Switched to {model}!")
+                        st.info("Model will be used in next analysis")
+                        # Force a small delay to ensure env var is set
+                        import time
+                        time.sleep(0.1)
                         st.rerun()
         
         st.divider()
         
-        # Legacy models warning
-        with st.expander("⚠️ Legacy Models (Not Recommended)", expanded=False):
-            st.warning("**These models have been replaced:**\n"
-                      "- ❌ o1-preview → Use **o1** instead\n"
-                      "- ❌ o1-mini → Use **o3-mini** instead\n"
-                      "- ❌ gpt-4-turbo → Use **gpt-4o** instead\n"
-                      "- ❌ gpt-3.5-turbo → Use **gpt-4o-mini** instead")
+        with st.expander("⚠️ Legacy Models", expanded=False):
+            st.warning("**Replaced models:**\n"
+                      "- ❌ o1-preview → Use **o1**\n"
+                      "- ❌ o1-mini → Use **o3-mini**\n"
+                      "- ❌ gpt-4-turbo → Use **gpt-4o**")
     
     with tab3:
         st.subheader("LangSmith Observability")
         
         if not langsmith_enabled:
-            st.info("Enable to track executions\n\nGet key: https://smith.langchain.com/settings")
+            st.info("Enable to track executions")
             
-            key = st.text_input("LangSmith API Key", type="password", 
-                               help="Get from https://smith.langchain.com/settings")
+            key = st.text_input("LangSmith API Key", type="password")
             proj = st.text_input("Project", value="business-idea-analyzer")
             
             if st.button("Enable LangSmith", type="primary"):
                 if key:
-                    if not key.startswith(('lsv2_', 'ls__')):
-                        st.warning("⚠️ Key format looks unusual")
-                    
                     os.environ["LANGCHAIN_API_KEY"] = key
                     os.environ["LANGCHAIN_TRACING_V2"] = "true"
                     os.environ["LANGCHAIN_PROJECT"] = proj
                     os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
-                    st.success("✅ Enabled! Restarting...")
+                    st.success("✅ Enabled!")
                     st.rerun()
                 else:
                     st.error("Enter API key")
@@ -242,12 +242,16 @@ if run:
         st.error("Configure OpenAI API key first")
         st.stop()
     
+    # Show which model will be used
+    active_model = os.getenv("MODEL_ALL", "gpt-4o-mini")
+    st.info(f"🤖 Using model: **{active_model}**")
+    
     try:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         # Planner
-        status_text.text("🔄 Planner Agent...")
+        status_text.text(f"🔄 Planner Agent ({active_model})...")
         with st.spinner("Planning..."):
             plan = agents.planner_agent(idea)
         st.subheader("1) Planner")
@@ -255,7 +259,7 @@ if run:
         progress_bar.progress(12)
         
         # Market
-        status_text.text("🔄 Market Analysis...")
+        status_text.text(f"🔄 Market Analysis ({active_model})...")
         with st.spinner("Analyzing market..."):
             market = agents.market_analysis_agent(idea, region)
         st.subheader("2) Market Analysis")
@@ -263,7 +267,7 @@ if run:
         progress_bar.progress(25)
         
         # Competition
-        status_text.text("🔄 Competition Analysis...")
+        status_text.text(f"🔄 Competition Analysis ({active_model})...")
         with st.spinner("Analyzing competition..."):
             competition = agents.competition_analysis_agent(idea, region)
         st.subheader("3) Competition")
@@ -271,7 +275,7 @@ if run:
         progress_bar.progress(38)
         
         # Financial
-        status_text.text("🔄 Financial Analysis...")
+        status_text.text(f"🔄 Financial Analysis ({active_model})...")
         with st.spinner("Financial modeling..."):
             financial = agents.financial_feasibility_agent(idea, region)
         st.subheader("4) Financial Feasibility")
@@ -279,7 +283,7 @@ if run:
         progress_bar.progress(50)
         
         # GTM
-        status_text.text("🔄 Go-to-Market...")
+        status_text.text(f"🔄 Go-to-Market ({active_model})...")
         with st.spinner("GTM strategy..."):
             gtm = agents.gtm_strategy_agent(idea, region)
         st.subheader("5) Go-to-Market")
@@ -287,7 +291,7 @@ if run:
         progress_bar.progress(62)
         
         # Risks
-        status_text.text("🔄 Risk Analysis...")
+        status_text.text(f"🔄 Risk Analysis ({active_model})...")
         with st.spinner("Identifying risks..."):
             risks = agents.risks_analysis_agent(idea, region)
         st.subheader("6) Risks")
@@ -295,7 +299,7 @@ if run:
         progress_bar.progress(75)
         
         # Critique
-        status_text.text("🔄 Critique...")
+        status_text.text(f"🔄 Critique ({active_model})...")
         analyses = {
             "Market": market,
             "Competition": competition,
@@ -310,7 +314,7 @@ if run:
         progress_bar.progress(88)
         
         # Final
-        status_text.text("🔄 Synthesis...")
+        status_text.text(f"🔄 Synthesis ({active_model})...")
         with st.spinner("Final report..."):
             final_md = agents.synthesizer_agent(idea, analyses, critic, region)
         st.subheader("8) Final Report")
@@ -344,7 +348,7 @@ if run:
         with col2:
             st.metric("Region", region)
         with col3:
-            st.metric("Model", model_all)
+            st.metric("Model Used", active_model)
         
         # LangSmith link
         if langsmith_enabled:
@@ -353,8 +357,8 @@ if run:
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
-        st.info("Check:\n- API key valid\n- Rate limits\n- Network\n- API tier for o-series models")
+        st.info("Check:\n- API key valid\n- Rate limits\n- Network\n- API tier for o-series")
         
         if langsmith_enabled:
-            st.info("[Check LangSmith](https://smith.langchain.com/) for details")
+            st.info("[Check LangSmith](https://smith.langchain.com/)")
         st.stop()
