@@ -6,7 +6,7 @@ from openai import OpenAI
 from langsmith import traceable
 
 # ===== Model Configuration =====
-MODEL_ALL = os.getenv("MODEL_ALL", "gpt-4o-mini")
+# DON'T cache these at import time - read dynamically!
 VERBOSITY_ALL = os.getenv("VERBOSITY", "low")
 USE_SERPER = os.getenv("USE_SERPER", "0") == "1"
 DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
@@ -33,9 +33,12 @@ def _debug_log(message: str):
     if DEBUG_MODE:
         print(f"[DEBUG] {message}")
 
+def _get_current_model() -> str:
+    """Get the current model from environment - DYNAMICALLY"""
+    return os.getenv("MODEL_ALL", "gpt-4o-mini")
+
 def _is_o_series_model(model: str) -> bool:
     """Check if model is an o-series reasoning model (o1, o3-mini, etc.)"""
-    # o-series models: o1, o3-mini, o1-preview (legacy), o1-mini (legacy)
     return model.startswith(("o1", "o3", "o4"))
 
 @traceable(name="openai_chat_completion")
@@ -63,9 +66,9 @@ def _respond(
     instructions: str,
     prompt: str,
     *,
-    model: str = MODEL_ALL,
+    model: Optional[str] = None,  # Made optional
     effort: Optional[str] = "medium",
-    verbosity: Optional[str] = VERBOSITY_ALL,
+    verbosity: Optional[str] = None,
     max_tokens: int = 1000,
 ) -> str:
     """
@@ -73,25 +76,30 @@ def _respond(
     - GPT-4o series (gpt-4o, gpt-4o-mini)
     - O-series reasoning models (o1, o3-mini)
     """
+    # CRITICAL FIX: Get model dynamically if not provided
+    if model is None:
+        model = _get_current_model()
+    
+    if verbosity is None:
+        verbosity = VERBOSITY_ALL
+    
+    _debug_log(f"Using model: {model}")  # Debug output
+    
     is_o_series = _is_o_series_model(model)
     
     # O-series models (o1, o3-mini) have special requirements
     if is_o_series:
-        # Combine instructions and prompt - o-series don't use system messages
         combined_prompt = f"{instructions}\n\n{prompt}"
         messages = [{"role": "user", "content": combined_prompt}]
         
-        # O-series specific parameters
         api_params = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            # No temperature for o-series
         }
         
         # o3-mini supports reasoning_effort
         if model == "o3-mini":
-            # Map effort to reasoning_effort: low/medium/high
             reasoning_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
             api_params["reasoning_effort"] = reasoning_map.get(effort, "medium")
     
@@ -106,7 +114,6 @@ def _respond(
             {"role": "user", "content": prompt}
         ]
         
-        # Temperature based on effort
         temperature_map = {"minimal": 0.3, "low": 0.5, "medium": 0.7, "high": 0.9}
         temperature = temperature_map.get(effort, 0.7)
         
