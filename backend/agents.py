@@ -4,18 +4,18 @@ import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 from langsmith import traceable
+from backend.retry_wrapper import retry_on_failure
 
 # ===== Model Configuration =====
-# O3-mini only configuration (with gpt-4o as fallback)
-AVAILABLE_MODELS = ["o3-mini", "gpt-4o"]  # o3-mini primary, gpt-4o fallback
-DEFAULT_MODEL = "o3-mini"
+AVAILABLE_MODELS = ["o3-mini", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
+DEFAULT_MODEL = "gpt-4o"
 
 VERBOSITY_ALL = os.getenv("VERBOSITY", "low")
 USE_SERPER = os.getenv("USE_SERPER", "0") == "1"
 DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
 
-# Rate limiting
-RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "1.0"))
+# Rate limiting - INCREASED for reliability
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "2.5"))
 
 # LangSmith configuration
 LANGCHAIN_TRACING = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
@@ -27,8 +27,8 @@ def get_client() -> OpenAI:
     if _client is None:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set")
-        _client = OpenAI(api_key=api_key, timeout=30.0, max_retries=2)
+            raise RuntimeError("OPENAI_API_KEY not set in environment or Streamlit secrets")
+        _client = OpenAI(api_key=api_key, timeout=60.0, max_retries=3)
     return _client
 
 def _debug_log(message: str):
@@ -39,9 +39,8 @@ def _debug_log(message: str):
 def _get_current_model() -> str:
     """Get the current model from environment - DYNAMICALLY"""
     model = os.getenv("MODEL_ALL", DEFAULT_MODEL)
-    # Validate model is in available list
     if model not in AVAILABLE_MODELS:
-        print(f"Warning: Model {model} not available. Using {DEFAULT_MODEL}")
+        _debug_log(f"Warning: Model {model} not available. Using {DEFAULT_MODEL}")
         return DEFAULT_MODEL
     return model
 
@@ -55,18 +54,31 @@ def _chat_completion(**kwargs) -> Any:
     time.sleep(RATE_LIMIT_DELAY)
     
     try:
+        _debug_log(f"Making API call with model: {kwargs.get('model', 'unknown')}")
         response = get_client().chat.completions.create(**kwargs)
+        _debug_log(f"API call successful")
         return response
     except Exception as e:
-        _debug_log(f"API Error: {type(e).__name__}: {str(e)}")
-        raise
+        error_msg = str(e)
+        _debug_log(f"API Error: {type(e).__name__}: {error_msg}")
+        
+        # Provide more specific error messages
+        if "authentication" in error_msg.lower() or "api_key" in error_msg.lower():
+            raise RuntimeError("Authentication failed. Check your OPENAI_API_KEY.")
+        elif "rate_limit" in error_msg.lower():
+            raise RuntimeError("Rate limit exceeded. Increase RATE_LIMIT_DELAY in .env")
+        elif "timeout" in error_msg.lower():
+            raise RuntimeError("Request timed out. Check your network connection.")
+        else:
+            raise
 
 def _safe_output_text(resp: Any) -> str:
     """Extract text from OpenAI chat completion response"""
     if resp and hasattr(resp, 'choices') and resp.choices:
         if hasattr(resp.choices[0], 'message') and hasattr(resp.choices[0].message, 'content'):
             content = resp.choices[0].message.content
-            return content.strip() if content else ""
+            if content:
+                return content.strip()
     return ""
 
 @traceable(name="llm_respond")
@@ -80,8 +92,8 @@ def _respond(
     max_tokens: int = 1000,
 ) -> str:
     """
-    OpenAI Chat API helper optimized for o3-mini
-    Falls back to gpt-4o if o3-mini fails
+    OpenAI Chat API helper optimized for reliability
+    Falls back to gpt-4o if primary model fails
     """
     # Get model dynamically if not provided
     if model is None:
@@ -95,27 +107,34 @@ def _respond(
     if verbosity is None:
         verbosity = VERBOSITY_ALL
     
-    _debug_log(f"Using model: {model}")
+    _debug_log(f"Using model: {model}, max_tokens: {max_tokens}")
     
     # Try with primary model first
     try:
         return _call_model(instructions, prompt, model, effort, verbosity, max_tokens)
     except Exception as e:
         error_msg = str(e)
+        _debug_log(f"Primary model failed: {error_msg}")
         
-        # If o3-mini fails due to tier restrictions, fall back to gpt-4o
-        if model == "o3-mini" and ("tier" in error_msg.lower() or "quota" in error_msg.lower() or "does not exist" in error_msg.lower()):
-            _debug_log(f"O3-mini failed, falling back to gpt-4o: {error_msg[:100]}")
-            try:
-                return _call_model(instructions, prompt, "gpt-4o", effort, verbosity, max_tokens)
-            except Exception as fallback_error:
-                return f"⚠️ Both o3-mini and gpt-4o failed. Error: {str(fallback_error)[:200]}"
+        # If o3-mini fails, fall back to gpt-4o
+        if model == "o3-mini" and "gpt-4o" in AVAILABLE_MODELS:
+            if any(keyword in error_msg.lower() for keyword in ["tier", "quota", "does not exist", "not found"]):
+                _debug_log(f"O3-mini unavailable, falling back to gpt-4o")
+                try:
+                    return _call_model(instructions, prompt, "gpt-4o", effort, verbosity, max_tokens)
+                except Exception as fallback_error:
+                    _debug_log(f"Fallback also failed: {str(fallback_error)}")
+                    return f"⚠️ Both o3-mini and gpt-4o failed. Error: {str(fallback_error)[:200]}"
+        
+        # For other errors, return formatted error message
+        if "authentication" in error_msg.lower() or "api_key" in error_msg.lower():
+            return "⚠️ API Authentication Error: Please check your OPENAI_API_KEY"
+        elif "rate limit" in error_msg.lower():
+            return "⚠️ Rate limit exceeded. Please increase RATE_LIMIT_DELAY and try again."
+        elif "timeout" in error_msg.lower():
+            return "⚠️ Request timeout. Check network connection or try again."
         else:
-            # For other errors or if already using gpt-4o, return error message
-            if "rate limit" in error_msg.lower():
-                return "⚠️ Rate limit hit. Please wait a moment and try again."
-            else:
-                return f"⚠️ API Error: {error_msg[:200]}"
+            return f"⚠️ API Error: {error_msg[:250]}"
 
 def _call_model(
     instructions: str,
@@ -129,9 +148,8 @@ def _call_model(
     
     is_o3_mini = _is_o3_mini_model(model)
     
-    # O3-mini configuration (supports streaming and tools unlike o1)
+    # O3-mini configuration
     if is_o3_mini:
-        # O3-mini can use system messages (unlike o1)
         system_content = instructions
         if verbosity == "low":
             system_content += "\n\nBe concise and direct."
@@ -144,19 +162,15 @@ def _call_model(
         api_params = {
             "model": model,
             "messages": messages,
-            "max_completion_tokens": max_tokens,  # o3-mini uses max_completion_tokens
+            "max_completion_tokens": max_tokens,
         }
         
         # O3-mini supports reasoning_effort
         reasoning_map = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
         api_params["reasoning_effort"] = reasoning_map.get(effort, "medium")
-        
-        # O3-mini does NOT support parallel_tool_calls
-        # We don't use tools in this app, but if we did, we'd set:
-        # api_params["parallel_tool_calls"] = False
     
     else:
-        # GPT-4o configuration (fallback)
+        # GPT-4o and other models configuration
         system_content = instructions
         if verbosity == "low":
             system_content += "\n\nBe concise and direct."
@@ -180,12 +194,14 @@ def _call_model(
     text = _safe_output_text(response)
     
     if text:
+        _debug_log(f"Response length: {len(text)} chars")
         return text
     else:
-        raise Exception("No response generated")
+        raise Exception("No response content generated from API")
 
 # ====================== Serper helpers ======================
 def _format_serper_block(results: list[dict], label: str = "Market Research") -> str:
+    """Format Serper search results for context"""
     if not results:
         return ""
     lines = [f"\n{label}:"]
@@ -198,93 +214,154 @@ def _format_serper_block(results: list[dict], label: str = "Market Research") ->
 # ======================= Agents =======================
 
 @traceable(name="planner_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def planner_agent(idea: str) -> str:
+    """Create strategic analysis plan"""
     instr = (
-        "You are a planning agent. Create 4-6 concise steps to analyze this business idea. "
-        "Focus on: market size, competition, financials, go-to-market, and risks."
+        "You are a strategic planning agent. Create 4-6 concise steps to analyze this business idea. "
+        "Focus on: market size, competition, financials, go-to-market, and risks. "
+        "Be specific and actionable."
     )
-    prompt = f"Business Idea: {idea}\n\nCreate a brief analysis plan."
-    return _respond(instr, prompt, effort="minimal", max_tokens=400)
+    prompt = f"Business Idea: {idea}\n\nCreate a brief strategic analysis plan."
+    return _respond(instr, prompt, effort="minimal", max_tokens=500)
 
 @traceable(name="market_analysis_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def market_analysis_agent(idea: str, region: str = "Pakistan") -> str:
+    """Analyze market size and potential"""
     serper_block = ""
     if USE_SERPER:
         try:
             from backend.serper import web_search_serper
-            q = f"{region} {idea.split()[0]} market size statistics"
+            q = f"{region} {idea.split()[0]} market size statistics trends"
             results = web_search_serper(q, num=3)
-            serper_block = _format_serper_block(results)
-        except:
+            serper_block = _format_serper_block(results, "Market Research Data")
+        except Exception as e:
+            _debug_log(f"Serper search failed: {e}")
             pass
 
     instr = (
         "You are a market analyst. Estimate TAM, SAM, and SOM for this business. "
-        "Format: 1) Brief assumptions (2 sentences), 2) Simple table, 3) Final line: TAM: X, SAM: Y, SOM: Z"
+        f"Focus on the {region} market specifically. "
+        "Format your response as:\n"
+        "1) Brief market assumptions (2-3 sentences)\n"
+        "2) Simple market sizing table\n"
+        "3) Final summary line: TAM: X, SAM: Y, SOM: Z\n\n"
+        "Be realistic and data-driven."
     )
     prompt = f"Business: {idea}\nRegion: {region}{serper_block}\n\nProvide market analysis."
-    return _respond(instr, prompt, max_tokens=800)
+    return _respond(instr, prompt, effort="medium", max_tokens=900)
 
 @traceable(name="competition_analysis_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def competition_analysis_agent(idea: str, region: str = "Pakistan") -> str:
+    """Analyze competitive landscape"""
     serper_block = ""
     if USE_SERPER:
         try:
             from backend.serper import web_search_serper
-            q = f"{region} {idea.split()[0]} competitors companies"
-            serper_block = _format_serper_block(web_search_serper(q, num=3))
-        except:
+            q = f"{region} {idea.split()[0]} competitors companies market leaders"
+            serper_block = _format_serper_block(web_search_serper(q, num=3), "Competitor Research")
+        except Exception as e:
+            _debug_log(f"Serper search failed: {e}")
             pass
     
-    instr = "You are a competition analyst. List 3-5 key competitors with brief positioning and differentiation opportunities."
+    instr = (
+        "You are a competition analyst. Identify 3-5 key competitors in the specified region. "
+        "For each competitor, provide:\n"
+        "- Name and brief description\n"
+        "- Market positioning\n"
+        "- Key strengths\n\n"
+        "Then suggest differentiation opportunities."
+    )
     prompt = f"Business: {idea}\nRegion: {region}{serper_block}\n\nAnalyze competition."
-    return _respond(instr, prompt, max_tokens=700)
+    return _respond(instr, prompt, effort="medium", max_tokens=800)
 
 @traceable(name="financial_feasibility_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def financial_feasibility_agent(idea: str, region: str = "Pakistan") -> str:
+    """Analyze financial feasibility"""
     instr = (
-        "You are a finance analyst. Outline: revenue model, pricing, key costs, margins, "
-        "and simple 3-year projection. Use the local currency."
+        "You are a financial analyst. Create a financial feasibility analysis with:\n"
+        "1) Revenue model and pricing strategy\n"
+        "2) Major cost categories (startup and ongoing)\n"
+        "3) Estimated gross margins\n"
+        "4) Simple 3-year financial projection\n"
+        f"5) Use local currency for {region}\n\n"
+        "Be realistic and conservative in estimates."
     )
     prompt = f"Business: {idea}\nRegion: {region}\n\nProvide financial analysis."
-    return _respond(instr, prompt, max_tokens=800)
+    return _respond(instr, prompt, effort="medium", max_tokens=900)
 
 @traceable(name="gtm_strategy_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def gtm_strategy_agent(idea: str, region: str = "Pakistan") -> str:
+    """Create go-to-market strategy"""
     instr = (
-        "You are a GTM strategist. Define: target customers, marketing channels, "
-        "key messages, and 90-day launch plan with 5-7 action items."
+        "You are a GTM strategist. Create a go-to-market strategy with:\n"
+        "1) Target customer segments (be specific)\n"
+        "2) Marketing channels (relevant to the region)\n"
+        "3) Key messaging and value proposition\n"
+        "4) 90-day launch plan with 5-7 concrete action items\n\n"
+        "Be practical and region-specific."
     )
     prompt = f"Business: {idea}\nRegion: {region}\n\nCreate GTM strategy."
-    return _respond(instr, prompt, max_tokens=700)
+    return _respond(instr, prompt, effort="medium", max_tokens=800)
 
 @traceable(name="risks_analysis_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def risks_analysis_agent(idea: str, region: str = "Pakistan") -> str:
-    instr = "You are a risk analyst. List 5 major risks (regulatory, market, operational, financial, competitive) with impact level and mitigation."
+    """Identify and analyze risks"""
+    instr = (
+        "You are a risk analyst. Identify 5 major risks with:\n"
+        "- Risk category (regulatory, market, operational, financial, competitive)\n"
+        "- Impact level (High/Medium/Low)\n"
+        "- Likelihood (High/Medium/Low)\n"
+        "- Mitigation strategy\n\n"
+        f"Focus on risks specific to {region}."
+    )
     prompt = f"Business: {idea}\nRegion: {region}\n\nIdentify key risks."
-    return _respond(instr, prompt, max_tokens=600)
+    return _respond(instr, prompt, effort="medium", max_tokens=700)
 
 @traceable(name="critic_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def critic_agent(idea: str, analyses: Dict[str, str], region: str = "Pakistan") -> str:
-    instr = "You are a business critic. Review the analyses and identify 3-5 major gaps, contradictions, or concerns."
-    analyses_summary = "\n".join([f"{k}: {v[:200]}..." for k, v in analyses.items()])
+    """Critical review of analyses"""
+    instr = (
+        "You are a critical business consultant. Review the analyses and identify:\n"
+        "1) Major gaps or missing information\n"
+        "2) Contradictions or inconsistencies\n"
+        "3) Unrealistic assumptions\n"
+        "4) Areas needing more research\n"
+        "5) Critical concerns that could derail the business\n\n"
+        "Be honest and thorough."
+    )
+    analyses_summary = "\n\n".join([f"## {k}\n{v[:300]}..." for k, v in analyses.items() if v])
     prompt = f"Business: {idea}\nRegion: {region}\n\nAnalyses:\n{analyses_summary}\n\nProvide critical review."
-    return _respond(instr, prompt, max_tokens=600)
+    return _respond(instr, prompt, effort="medium", max_tokens=700)
 
 @traceable(name="synthesizer_agent")
+@retry_on_failure(max_retries=2, delay=3.0)
 def synthesizer_agent(idea: str, analyses: Dict[str, str], critique: str, region: str = "Pakistan") -> str:
+    """Synthesize final executive report"""
     instr = (
-        "You are a management consultant. Create a final report with:\n"
-        "1. Executive Summary (3-4 bullets with Go/No-Go recommendation)\n"
-        "2. Key Insights (top 5 findings)\n"
-        "3. Next Steps (3-5 actions)\n"
-        "Use markdown formatting."
+        "You are a management consultant. Create a final executive report with:\n\n"
+        "## Executive Summary\n"
+        "- 3-4 bullet points summarizing key findings\n"
+        "- Clear Go/No-Go/Conditional-Go recommendation with reasoning\n\n"
+        "## Key Insights\n"
+        "- Top 5 most important findings across all analyses\n\n"
+        "## Critical Success Factors\n"
+        "- 3-4 factors that will determine success\n\n"
+        "## Next Steps\n"
+        "- 3-5 concrete actions to take\n\n"
+        "Use markdown formatting. Be decisive and actionable."
     )
-    analyses_summary = "\n".join([f"{k}: {v[:150]}..." for k, v in analyses.items()])
+    analyses_summary = "\n\n".join([f"## {k}\n{v[:250]}..." for k, v in analyses.items() if v])
     prompt = (
         f"Business: {idea}\nRegion: {region}\n\n"
-        f"Key findings:\n{analyses_summary}\n\n"
-        f"Critique: {critique[:200]}...\n\n"
-        "Create final report."
+        f"Key Analyses:\n{analyses_summary}\n\n"
+        f"Critical Review:\n{critique[:300]}...\n\n"
+        "Create comprehensive final report."
     )
-    return _respond(instr, prompt, effort="high", max_tokens=1200)
+    return _respond(instr, prompt, effort="high", max_tokens=1400)
